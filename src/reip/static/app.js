@@ -39,6 +39,7 @@ function go(name) {
   if (name === 'dashboard') loadDashboard();
   if (name === 'avm')       loadAvm();
   if (name === 'buy')       loadBuy();
+  if (name === 'topzips')   loadTopZips();
 }
 window.go = go;
 
@@ -587,6 +588,76 @@ window.prefillFromBuy = prefillFromBuy;
   document.addEventListener('DOMContentLoaded', () => $(id).addEventListener('change', loadBuy))
 );
 document.addEventListener('DOMContentLoaded', () => $('buyRefresh').addEventListener('click', loadBuy));
+
+// ---- Top Zips (nationwide) ---------------------------------------------
+
+async function loadTopZips() {
+  const params = new URLSearchParams({
+    sort: $('tzSort').value,
+    limit: $('tzLimit').value || '100',
+    min_price: $('tzMin').value,
+    max_price: $('tzMax').value,
+    mortgage_rate: $('tzRate').value,
+  });
+  const st = $('tzState').value.trim().toUpperCase();
+  const cb = $('tzCbsa').value.trim();
+  if (st) params.set('state', st);
+  if (cb) params.set('cbsa', cb);
+  $('tzHost').innerHTML = spinnerHTML('Scoring every US zip with ZHVI+ZORI coverage…');
+  $('tzMeta').textContent = '';
+  let r;
+  try {
+    r = await api('/zips/top?' + params.toString());
+  } catch (e) {
+    $('tzHost').innerHTML = `<div class="p-6 text-red">${e.message}</div>`;
+    return;
+  }
+  $('tzMeta').textContent = `${r.count} zips ranked`;
+  if (!r.results.length) {
+    $('tzHost').innerHTML = '<div class="p-6 text-muted">No zips matched.</div>';
+    return;
+  }
+  let html = '<table class="tight w-full text-sm"><thead><tr>'
+    + '<th>Rank</th><th>ZIP</th><th>State</th><th>Metro</th>'
+    + '<th class="text-right">ZHVI</th><th class="text-right">ZORI</th>'
+    + '<th class="text-right">5y IRR</th><th class="text-right">5y total ($)</th>'
+    + '<th class="text-right">5y rental ($)</th><th class="text-right">5y appr ($)</th>'
+    + '<th class="text-right">cap</th><th class="text-right">DSCR</th><th class="text-right">vac</th>'
+    + '<th>Browse</th>'
+    + '</tr></thead><tbody>';
+  r.results.forEach((z, i) => {
+    html += `<tr>
+      <td class="text-muted">${i+1}</td>
+      <td class="num">${z.zip}</td>
+      <td>${z.state || '—'}</td>
+      <td class="text-xs">${z.cbsa_name || '—'}</td>
+      <td class="text-right num">${fmtMoney(z.typical_price)}</td>
+      <td class="text-right num">${fmtMoney(z.typical_rent)}/mo</td>
+      <td class="text-right num ${z.irr_5y > 0.10 ? 'text-green' : z.irr_5y < 0 ? 'text-red' : ''}">${fmtPct(z.irr_5y, 1)}</td>
+      <td class="text-right num ${z.total_return_5y_dollars > 0 ? 'text-green' : 'text-red'}">${fmtMoney(z.total_return_5y_dollars)}</td>
+      <td class="text-right num ${z.rental_profit_5y > 0 ? 'text-green' : 'text-red'}">${fmtMoney(z.rental_profit_5y)}</td>
+      <td class="text-right num ${z.appreciation_5y_dollars > 0 ? 'text-green' : 'text-red'}">${fmtMoney(z.appreciation_5y_dollars)}</td>
+      <td class="text-right num">${fmtPct(z.cap_rate_y1, 1)}</td>
+      <td class="text-right num">${z.dscr_y1.toFixed(2)}×</td>
+      <td class="text-right num">${fmtPct(z.vacancy_used, 1)}</td>
+      <td class="text-xs whitespace-nowrap">
+        <a href="${z.redfin_search_url}" target="_blank" class="text-accent hover:underline">Redfin</a> ·
+        <a href="${z.zillow_search_url}" target="_blank" class="text-accent hover:underline">Zillow</a>
+      </td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  $('tzHost').innerHTML = html;
+}
+
+['tzState','tzCbsa','tzSort','tzMin','tzMax','tzRate','tzLimit'].forEach(id =>
+  document.addEventListener('DOMContentLoaded', () => {
+    const el = $(id); if (el) el.addEventListener('change', loadTopZips);
+  })
+);
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = $('tzRefresh'); if (btn) btn.addEventListener('click', loadTopZips);
+});
 
 // ---- Listing ingestion -------------------------------------------------
 

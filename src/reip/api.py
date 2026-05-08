@@ -34,6 +34,7 @@ from . import property_ingest as ingest_mod
 from . import listings_search as listings_mod
 from . import projection as proj_mod
 from . import decision as decision_mod
+from . import zip_returns as zip_returns_mod
 
 app = FastAPI(title="reip", version="0.4.0",
               description="Real estate investment platform — deal-screening + underwriting")
@@ -264,6 +265,46 @@ def mitigations(req: MitigationRequest):
     mits = rec_mod.VerifiedMitigations(**req.mitigations)
     out = rec_mod.classify(deal, mits)
     return out.to_dict()
+
+
+@app.get("/api/zips/top")
+def zips_top(
+    state: Optional[str] = None,
+    cbsa: Optional[str] = None,
+    sort: str = Query("irr", pattern="^(irr|total_return|cashflow|appreciation|yield)$"),
+    limit: int = 100,
+    min_price: int = 50_000,
+    max_price: int = 800_000,
+    mortgage_rate: float = 0.07,
+    ltv: float = 0.75,
+):
+    """Rank every US zip by 5y expected investment return.
+
+    Coverage = ~30k zips (every zip with both ZHVI + ZORI). Each zip is
+    treated as a 'typical home in this zip' synthetic listing using the
+    same projection engine the per-property flow uses.
+
+    Returns deep links to Redfin and Zillow zip-search pages so the user
+    can browse actual properties from the most-promising zips.
+    """
+    con = connect()
+    # Pull MSA archetype dict so the projection's archetype overlay applies
+    # per-zip. Cached implicitly via the msa_score features query.
+    archetypes = {}
+    try:
+        raw = msa_score.features(con)
+        if not raw.empty:
+            scored = msa_score.with_archetype(msa_score.score(raw))
+            archetypes = dict(zip(scored["cbsa_code"].astype(str), scored["archetype"]))
+    except Exception:
+        pass
+    rows = zip_returns_mod.rank_us(
+        con, min_price=min_price, max_price=max_price,
+        mortgage_rate=mortgage_rate, ltv=ltv,
+        state=state, cbsa_code=cbsa, sort=sort, limit=limit,
+        archetypes_by_cbsa=archetypes,
+    )
+    return {"results": [zip_returns_mod.to_dict(z) for z in rows], "count": len(rows)}
 
 
 @app.get("/api/listings/markets")
