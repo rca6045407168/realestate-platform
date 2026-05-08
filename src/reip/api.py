@@ -272,9 +272,37 @@ def listings_markets():
     return listings_mod.list_markets()
 
 
+# Per-market score cache. Key = (cbsa, min_price, max_price, mortgage_rate, ltv).
+# 10-min TTL so the "all markets" fan-out doesn't re-fetch Redfin every call.
+_BUY_CACHE: dict[tuple, tuple[float, dict]] = {}
+_BUY_CACHE_TTL = 600  # seconds
+
+
+def _score_one_market(
+    cbsa: str, min_price: int, max_price: int,
+    mortgage_rate: float, ltv: float,
+) -> dict:
+    """Fetch + project + score every listing in one CBSA. Returns the full
+    list (no cap, no sort, no thresholds applied). Cached per (cbsa, params).
+    """
+    import time
+    key = (cbsa, min_price, max_price, mortgage_rate, ltv)
+    cached = _BUY_CACHE.get(key)
+    if cached and (time.time() - cached[0]) < _BUY_CACHE_TTL:
+        return cached[1]
+
+    listings, warnings = listings_mod.search(
+        cbsa, num_homes=200, min_price=min_price, max_price=max_price,
+    )
+    out = _build_results_for(cbsa, listings, mortgage_rate, ltv)
+    out["warnings"] = warnings
+    _BUY_CACHE[key] = (time.time(), out)
+    return out
+
+
 @app.get("/api/listings/buy")
 def listings_buy(
-    cbsa: str = Query("32820", description="CBSA code (default Memphis 32820)"),
+    cbsa: str = Query("32820", description="CBSA code, or 'all' for cross-market top picks"),
     zip: Optional[str] = Query(None, description="Filter to a single ZIP code (5 digits)"),
     limit: int = 12,
     min_price: int = 50_000,
@@ -287,29 +315,75 @@ def listings_buy(
     ltv: float = 0.75,
     sort: str = Query("irr", pattern="^(total_return|cashflow|appreciation|irr)$"),
 ):
-    """Live buyable listings for a launch market, ranked by 5-year return.
+    """Live buyable listings, ranked by 5-year return.
 
-    For each property:
-      - pulls Redfin's active for-sale listings via the gis search API
-      - projects 5y appreciation (zip ZHVI CAGR with archetype overlay)
-      - projects 5y rental profit (NOI − debt service, with rent growth)
-      - runs the recommendation gate (GREEN / YELLOW / RED)
-      - generates a plain-English decision rationale
-
-    Returns the top N ranked by chosen criterion.
+    cbsa='all' fans out across every verified market in parallel and
+    re-ranks globally. Each per-market scoring is cached for 10 min so
+    repeated 'all' calls are fast.
     """
-    listings, warnings = listings_mod.search(
-        cbsa, num_homes=200, min_price=min_price, max_price=max_price,
-    )
-    if not listings:
-        return {"results": [], "warnings": warnings}
+    if str(cbsa).lower() == "all":
+        return _all_markets(zip, limit, min_price, max_price, min_irr,
+                            min_dscr, min_cap, min_school_count,
+                            mortgage_rate, ltv, sort)
 
-    # Pull MSA archetype + scores once
+    bundle = _score_one_market(cbsa, min_price, max_price, mortgage_rate, ltv)
+    listings = bundle.get("listings") or []
+    warnings = bundle.get("warnings") or []
+    if not listings:
+        return {"results": [], "warnings": warnings,
+                "market": listings_mod.MARKETS.get(cbsa, {}).get("name", cbsa),
+                "archetype": None}
+
+    archetype = bundle.get("archetype")
+    appr_score = bundle.get("appreciation_score")
+    cf_score = bundle.get("cashflow_score")
+    msa_pct = bundle.get("msa_blended_pct")
+
+    schools_by_zip = bundle.get("schools_by_zip") or {}
+    income_by_zip = bundle.get("income_by_zip") or {}
+    avm_by_zip = bundle.get("avm_by_zip") or {}
+
+    results = []
+    target_zip = (zip or "").strip().zfill(5) if zip else None
+    for entry in listings:
+        d = entry["listing"]
+        p = entry["projection_obj"]
+        if target_zip and str(d.get("zip")).zfill(5) != target_zip:
+            continue
+        if min_irr  is not None and p.irr_5y       < min_irr:  continue
+        if min_dscr is not None and p.dscr_y1      < min_dscr: continue
+        if min_cap  is not None and p.cap_rate_y1  < min_cap:  continue
+        sch = entry.get("schools")
+        if min_school_count is not None and (not sch or sch.get("school_count", 0) < min_school_count):
+            continue
+        results.append(entry["output"])
+
+    sort_key = {
+        "total_return":  lambda r: r["projection"]["total_return_5y_dollars"],
+        "cashflow":      lambda r: r["projection"]["rental_profit_5y"],
+        "appreciation":  lambda r: r["projection"]["appreciation_5y_dollars"],
+        "irr":           lambda r: r["projection"]["irr_5y"],
+    }[sort]
+    results.sort(key=sort_key, reverse=True)
+    return {"results": results[:limit], "warnings": warnings,
+            "market": listings_mod.MARKETS.get(cbsa, {}).get("name", cbsa),
+            "archetype": archetype}
+
+
+def _build_results_for(cbsa, listings_objs, mortgage_rate, ltv):
+    """Pure scorer: take Listing objects → return per-listing dicts (no
+    threshold filtering, no sort, no truncation). Used by both the
+    single-market and all-markets paths.
+    """
+    if not listings_objs:
+        return {"listings": [], "archetype": None,
+                "appreciation_score": None, "cashflow_score": None,
+                "msa_blended_pct": None,
+                "schools_by_zip": {}, "income_by_zip": {}, "avm_by_zip": {}}
+
     con = connect()
     raw = msa_score.features(con)
-    archetype = None
-    appr_score = cf_score = None
-    msa_pct = None
+    archetype = appr_score = cf_score = msa_pct = None
     if not raw.empty:
         scored = msa_score.with_archetype(msa_score.score(raw))
         m = scored[scored["cbsa_code"].astype(str) == str(cbsa)]
@@ -320,14 +394,12 @@ def listings_buy(
             cf_score = float(row.get("cashflow_score") or 0)
             msa_pct = float(scored["total_return_score"].rank(pct=True).loc[m.index[0]])
 
-    # AVM map for the CBSA's zips (single SQL hit)
-    avm_mod.persist(con)  # idempotent
+    avm_mod.persist(con)
     avm_rows = con.execute(
         "SELECT zip, divergence_z, direction FROM zip_avm_signal"
     ).fetchdf()
     avm_by_zip = {r.zip: (r.direction, r.divergence_z) for r in avm_rows.itertuples()}
 
-    # Schools overlay for the zips in this CBSA
     schools_rows = con.execute(
         """SELECT s.zip, s.school_count, s.elementary_count, s.middle_count,
                   s.high_count, s.charter_count, s.total_enrollment,
@@ -340,19 +412,18 @@ def listings_buy(
     ).fetchdf()
     schools_by_zip = {
         r.zip: {
-            "school_count":      int(r.school_count or 0),
-            "elementary_count":  int(r.elementary_count or 0),
-            "middle_count":      int(r.middle_count or 0),
-            "high_count":        int(r.high_count or 0),
-            "charter_count":     int(r.charter_count or 0),
-            "total_enrollment":  int(r.total_enrollment or 0),
-            "avg_st_ratio":      None if pd.isna(r.avg_student_teacher_ratio)
-                                 else round(float(r.avg_student_teacher_ratio), 1),
+            "school_count":     int(r.school_count or 0),
+            "elementary_count": int(r.elementary_count or 0),
+            "middle_count":     int(r.middle_count or 0),
+            "high_count":       int(r.high_count or 0),
+            "charter_count":    int(r.charter_count or 0),
+            "total_enrollment": int(r.total_enrollment or 0),
+            "avg_st_ratio":     None if pd.isna(r.avg_student_teacher_ratio)
+                                else round(float(r.avg_student_teacher_ratio), 1),
         }
         for r in schools_rows.itertuples()
     }
 
-    # Median household income per zip via the zip→county→ACS hop
     income_rows = con.execute(
         """SELECT z.zip, a.median_household_income
            FROM zip_county_xwalk z
@@ -367,20 +438,14 @@ def listings_buy(
         for r in income_rows.itertuples()
     }
 
-    results = []
-    target_zip = (zip or "").strip().zfill(5) if zip else None
-    for L in listings:
+    enriched = []
+    for L in listings_objs:
         d = L.__dict__
-        # Drop incomplete cards: vacant lots / non-residential parcels usually
-        # arrive with null beds + null sqft. We need both for a credible
-        # rental projection. Also enforce a sane minimum price floor.
         if not d.get("listed_price") or d["listed_price"] < 30_000:
             continue
         if not d.get("zip"):
             continue
         if d.get("beds") is None and d.get("sqft") is None:
-            continue
-        if target_zip and str(d["zip"]).zfill(5) != target_zip:
             continue
         try:
             p = proj_mod.project(con, d, archetype=archetype,
@@ -388,19 +453,17 @@ def listings_buy(
         except Exception:
             continue
         avm_dir, avm_z = avm_by_zip.get(d["zip"], (None, None))
-        # Run the rec gate using the projection's DSCR and the MSA percentile
         deal = rec_mod.DealUnderwriting(
             stabilized_dscr=p.dscr_y1,
             refi_appraisal_stress_pass=None,
             insurance_trend_pct=None,
             climate_pct=None,
             alpha_stack_count=None,
-            stress_coc_on_residual=p.cash_on_cash_y1 * 0.7,  # crude stress
+            stress_coc_on_residual=p.cash_on_cash_y1 * 0.7,
             msa_blended_percentile=msa_pct,
             sensitivity_negative_cashflow=p.dscr_y1 < 1.0,
         )
         rec = rec_mod.classify(deal)
-
         decision = decision_mod.build(
             d, p, archetype=archetype,
             msa_appreciation_score=appr_score, msa_cashflow_score=cf_score,
@@ -410,23 +473,13 @@ def listings_buy(
             schools=schools_by_zip.get(d["zip"]),
             county_median_income=income_by_zip.get(d["zip"]),
         )
-
-        # Hard threshold filters — honored before sort so the user gets
-        # a clean, action-ready list.
-        if min_irr  is not None and p.irr_5y       < min_irr:  continue
-        if min_dscr is not None and p.dscr_y1      < min_dscr: continue
-        if min_cap  is not None and p.cap_rate_y1  < min_cap:  continue
-
-        schools = schools_by_zip.get(d["zip"])
-        if min_school_count is not None and (not schools or schools.get("school_count", 0) < min_school_count):
-            continue
-
-        results.append({
+        sch = schools_by_zip.get(d["zip"])
+        out = {
             "listing":        _clean(d),
             "projection":     p.__dict__,
             "avm":            {"direction": avm_dir,
                                "z": float(avm_z) if avm_z is not None else None},
-            "schools":        schools,
+            "schools":        sch,
             "county_median_income": income_by_zip.get(d["zip"]),
             "recommendation": rec.to_dict(),
             "decision": {
@@ -435,19 +488,69 @@ def listings_buy(
                 "reasons":        decision.reasons,
                 "primary_action": decision.primary_action,
             },
-        })
+        }
+        enriched.append({"listing": d, "projection_obj": p,
+                         "schools": sch, "output": out})
+    return {
+        "listings": enriched,
+        "archetype": archetype,
+        "appreciation_score": appr_score,
+        "cashflow_score": cf_score,
+        "msa_blended_pct": msa_pct,
+        "schools_by_zip": schools_by_zip,
+        "income_by_zip": income_by_zip,
+        "avm_by_zip": avm_by_zip,
+    }
 
-    # Sort by chosen criterion
+
+def _all_markets(zip, limit, min_price, max_price, min_irr, min_dscr, min_cap,
+                 min_school_count, mortgage_rate, ltv, sort):
+    """Fan out to every verified market in parallel, then merge + sort + cap."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    target_zip = (zip or "").strip().zfill(5) if zip else None
+    cbsas = list(listings_mod.MARKETS.keys())
+    all_results = []
+    warnings = []
+
+    def _one(cbsa):
+        return cbsa, _score_one_market(cbsa, min_price, max_price, mortgage_rate, ltv)
+
+    with ThreadPoolExecutor(max_workers=min(8, len(cbsas))) as ex:
+        futures = [ex.submit(_one, c) for c in cbsas]
+        for f in as_completed(futures):
+            try:
+                cbsa, bundle = f.result(timeout=30)
+            except Exception as e:
+                warnings.append(f"market fetch failed: {e}")
+                continue
+            warnings.extend(bundle.get("warnings") or [])
+            for entry in bundle.get("listings") or []:
+                d = entry["listing"]
+                p = entry["projection_obj"]
+                if target_zip and str(d.get("zip")).zfill(5) != target_zip:
+                    continue
+                if min_irr  is not None and p.irr_5y       < min_irr:  continue
+                if min_dscr is not None and p.dscr_y1      < min_dscr: continue
+                if min_cap  is not None and p.cap_rate_y1  < min_cap:  continue
+                sch = entry.get("schools")
+                if min_school_count is not None and (not sch or sch.get("school_count", 0) < min_school_count):
+                    continue
+                all_results.append(entry["output"])
+
     sort_key = {
         "total_return":  lambda r: r["projection"]["total_return_5y_dollars"],
         "cashflow":      lambda r: r["projection"]["rental_profit_5y"],
         "appreciation":  lambda r: r["projection"]["appreciation_5y_dollars"],
         "irr":           lambda r: r["projection"]["irr_5y"],
     }[sort]
-    results.sort(key=sort_key, reverse=True)
-    return {"results": results[:limit], "warnings": warnings,
-            "market": listings_mod.MARKETS.get(cbsa, {}).get("name", cbsa),
-            "archetype": archetype}
+    all_results.sort(key=sort_key, reverse=True)
+    return {
+        "results": all_results[:limit],
+        "warnings": warnings,
+        "market": f"★ Best across {len(cbsas)} markets",
+        "archetype": None,
+    }
 
 
 @app.post("/api/properties/ingest")

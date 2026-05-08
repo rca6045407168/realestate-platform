@@ -387,6 +387,11 @@ async function loadMarkets() {
                  'Boom-Bust Beta', 'Resource & Niche', 'Mixed', 'Other'];
   const sel = $('buyCbsa');
   sel.innerHTML = '';
+  // Always-on: cross-market top picks
+  const topOpt = document.createElement('option');
+  topOpt.value = 'all';
+  topOpt.textContent = '★ Best across all markets';
+  sel.appendChild(topOpt);
   for (const archetype of order) {
     const group = groups[archetype];
     if (!group) continue;
@@ -401,7 +406,8 @@ async function loadMarkets() {
     }
     sel.appendChild(og);
   }
-  // Default to Memphis if present, else first
+  // Default to Memphis (a working market with rich data) over the
+  // 'all' option to avoid 30-60s blocking call on first paint.
   sel.value = '32820';
   if (sel.value !== '32820') sel.selectedIndex = 0;
   MARKETS_LOADED = true;
@@ -428,7 +434,8 @@ async function loadBuy() {
     const v = $(id).value.trim();
     if (v !== '') params.set(key, v);
   }
-  $('buyHost').innerHTML = '<div class="col-span-3 p-6 text-muted">Pulling live listings + projecting 5y returns…</div>';
+  const isAll = $('buyCbsa').value === 'all';
+  $('buyHost').innerHTML = `<div class="col-span-3 p-6 text-muted">${isAll ? 'Fanning out to all markets in parallel — first call takes ~30s, cached after.' : 'Pulling live listings + projecting 5y returns…'}</div>`;
   $('buyMeta').textContent = '';
   let r;
   try {
@@ -463,7 +470,8 @@ function renderBuyCard(r) {
     <div class="px-4 pt-4 flex items-start justify-between gap-2">
       <div class="min-w-0">
         <div class="text-base font-semibold truncate">${L.address || '—'}</div>
-        <div class="text-xs text-muted truncate">${L.city || ''}, ${L.state || ''} ${L.zip || ''} · ${L.cbsa_name}</div>
+        <div class="text-xs text-muted truncate">${L.city || ''}, ${L.state || ''} ${L.zip || ''}</div>
+        <div class="text-xs text-accent truncate">${L.cbsa_name}</div>
       </div>
       <div class="text-xs px-2 py-0.5 rounded ${verdictColor} whitespace-nowrap">${v}</div>
     </div>
