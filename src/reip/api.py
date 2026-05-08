@@ -31,6 +31,9 @@ from . import msa_score, avm as avm_mod, remarks as remarks_mod
 from . import underwriting as uw_mod
 from . import recommendation as rec_mod
 from . import property_ingest as ingest_mod
+from . import listings_search as listings_mod
+from . import projection as proj_mod
+from . import decision as decision_mod
 
 app = FastAPI(title="reip", version="0.4.0",
               description="Real estate investment platform — deal-screening + underwriting")
@@ -261,6 +264,128 @@ def mitigations(req: MitigationRequest):
     mits = rec_mod.VerifiedMitigations(**req.mitigations)
     out = rec_mod.classify(deal, mits)
     return out.to_dict()
+
+
+@app.get("/api/listings/markets")
+def listings_markets():
+    """Allowlist of CBSAs the screener can search."""
+    return listings_mod.list_markets()
+
+
+@app.get("/api/listings/buy")
+def listings_buy(
+    cbsa: str = Query("32820", description="CBSA code (default Memphis 32820)"),
+    limit: int = 12,
+    min_price: int = 50_000,
+    max_price: int = 500_000,
+    mortgage_rate: float = 0.07,
+    ltv: float = 0.75,
+    sort: str = Query("total_return", pattern="^(total_return|cashflow|appreciation|irr)$"),
+):
+    """Live buyable listings for a launch market, ranked by 5-year return.
+
+    For each property:
+      - pulls Redfin's active for-sale listings via the gis search API
+      - projects 5y appreciation (zip ZHVI CAGR with archetype overlay)
+      - projects 5y rental profit (NOI − debt service, with rent growth)
+      - runs the recommendation gate (GREEN / YELLOW / RED)
+      - generates a plain-English decision rationale
+
+    Returns the top N ranked by chosen criterion.
+    """
+    listings, warnings = listings_mod.search(
+        cbsa, num_homes=200, min_price=min_price, max_price=max_price,
+    )
+    if not listings:
+        return {"results": [], "warnings": warnings}
+
+    # Pull MSA archetype + scores once
+    con = connect()
+    raw = msa_score.features(con)
+    archetype = None
+    appr_score = cf_score = None
+    msa_pct = None
+    if not raw.empty:
+        scored = msa_score.with_archetype(msa_score.score(raw))
+        m = scored[scored["cbsa_code"].astype(str) == str(cbsa)]
+        if not m.empty:
+            row = m.iloc[0]
+            archetype = row.get("archetype")
+            appr_score = float(row.get("appreciation_score") or 0)
+            cf_score = float(row.get("cashflow_score") or 0)
+            msa_pct = float(scored["total_return_score"].rank(pct=True).loc[m.index[0]])
+
+    # AVM map for the CBSA's zips (single SQL hit)
+    avm_mod.persist(con)  # idempotent
+    avm_rows = con.execute(
+        "SELECT zip, divergence_z, direction FROM zip_avm_signal"
+    ).fetchdf()
+    avm_by_zip = {r.zip: (r.direction, r.divergence_z) for r in avm_rows.itertuples()}
+
+    results = []
+    for L in listings:
+        d = L.__dict__
+        # Drop incomplete cards: vacant lots / non-residential parcels usually
+        # arrive with null beds + null sqft. We need both for a credible
+        # rental projection. Also enforce a sane minimum price floor.
+        if not d.get("listed_price") or d["listed_price"] < 30_000:
+            continue
+        if not d.get("zip"):
+            continue
+        if d.get("beds") is None and d.get("sqft") is None:
+            continue
+        try:
+            p = proj_mod.project(con, d, archetype=archetype,
+                                 mortgage_rate=mortgage_rate, ltv=ltv)
+        except Exception:
+            continue
+        avm_dir, avm_z = avm_by_zip.get(d["zip"], (None, None))
+        # Run the rec gate using the projection's DSCR and the MSA percentile
+        deal = rec_mod.DealUnderwriting(
+            stabilized_dscr=p.dscr_y1,
+            refi_appraisal_stress_pass=None,
+            insurance_trend_pct=None,
+            climate_pct=None,
+            alpha_stack_count=None,
+            stress_coc_on_residual=p.cash_on_cash_y1 * 0.7,  # crude stress
+            msa_blended_percentile=msa_pct,
+            sensitivity_negative_cashflow=p.dscr_y1 < 1.0,
+        )
+        rec = rec_mod.classify(deal)
+
+        decision = decision_mod.build(
+            d, p, archetype=archetype,
+            msa_appreciation_score=appr_score, msa_cashflow_score=cf_score,
+            avm_direction=avm_dir, avm_z=float(avm_z) if avm_z is not None else None,
+            rec_verdict=rec.verdict.value, rec_reasons=rec.reasons,
+            rec_primary_action=rec.primary_action,
+        )
+
+        results.append({
+            "listing": _clean(d),
+            "projection": p.__dict__,
+            "avm": {"direction": avm_dir,
+                    "z": float(avm_z) if avm_z is not None else None},
+            "recommendation": rec.to_dict(),
+            "decision": {
+                "verdict":        decision.verdict,
+                "thesis_tag":     decision.thesis_tag,
+                "reasons":        decision.reasons,
+                "primary_action": decision.primary_action,
+            },
+        })
+
+    # Sort by chosen criterion
+    sort_key = {
+        "total_return":  lambda r: r["projection"]["total_return_5y_dollars"],
+        "cashflow":      lambda r: r["projection"]["rental_profit_5y"],
+        "appreciation":  lambda r: r["projection"]["appreciation_5y_dollars"],
+        "irr":           lambda r: r["projection"]["irr_5y"],
+    }[sort]
+    results.sort(key=sort_key, reverse=True)
+    return {"results": results[:limit], "warnings": warnings,
+            "market": listings_mod.MARKETS.get(cbsa, {}).get("name", cbsa),
+            "archetype": archetype}
 
 
 @app.post("/api/properties/ingest")

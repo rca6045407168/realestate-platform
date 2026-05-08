@@ -30,9 +30,9 @@ function go(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
   $('screen-' + name).classList.remove('hidden');
   document.querySelectorAll('.navlink').forEach(b => b.classList.remove('border-accent'));
-  // (don't bother with active style — hover is enough)
   if (name === 'dashboard') loadDashboard();
-  if (name === 'avm') loadAvm();
+  if (name === 'avm')       loadAvm();
+  if (name === 'buy')       loadBuy();
 }
 window.go = go;
 
@@ -365,6 +365,113 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
   });
 });
+
+// ---- Buy ideas screen ----------------------------------------------------
+
+async function loadBuy() {
+  const cbsa = $('buyCbsa').value;
+  const sort = $('buySort').value;
+  const min = +$('buyMin').value;
+  const max = +$('buyMax').value;
+  const rate = +$('buyRate').value;
+  const limit = +$('buyLimit').value || 12;
+  $('buyHost').innerHTML = '<div class="col-span-3 p-6 text-muted">Pulling live listings + projecting 5y returns…</div>';
+  $('buyMeta').textContent = '';
+  let r;
+  try {
+    r = await api(`/listings/buy?cbsa=${cbsa}&limit=${limit}&min_price=${min}&max_price=${max}&mortgage_rate=${rate}&sort=${sort}`);
+  } catch (e) {
+    $('buyHost').innerHTML = `<div class="col-span-3 p-6 text-red">${e.message}</div>`;
+    return;
+  }
+  $('buyMeta').textContent = `${r.market || ''} · archetype ${r.archetype || '—'} · ${r.results.length} properties scored`;
+  if (!r.results.length) {
+    $('buyHost').innerHTML = `<div class="col-span-3 p-6 text-yellow">No results.${(r.warnings || []).map(w => '<br>'+w).join('')}</div>`;
+    return;
+  }
+  $('buyHost').innerHTML = r.results.map(renderBuyCard).join('');
+}
+
+function renderBuyCard(r) {
+  const L = r.listing;
+  const p = r.projection;
+  const d = r.decision;
+  const v = d.verdict;
+  const verdictColor = v === 'GREEN' ? 'verdict-GREEN' : v === 'YELLOW' ? 'verdict-YELLOW' : 'verdict-RED';
+  const avmTag = r.avm.direction === 'cold'
+    ? `<span class="text-red text-xs">AVM cold ${r.avm.z?.toFixed(1)}σ</span>`
+    : r.avm.direction === 'hot'
+    ? `<span class="text-green text-xs">AVM hot +${r.avm.z?.toFixed(1)}σ</span>`
+    : r.avm.direction === 'aligned'
+    ? `<span class="text-muted text-xs">AVM aligned</span>`
+    : '';
+
+  return `<div class="bg-card rounded border border-line overflow-hidden flex flex-col">
+    <div class="px-4 pt-4 flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <div class="text-base font-semibold truncate">${L.address || '—'}</div>
+        <div class="text-xs text-muted truncate">${L.city || ''}, ${L.state || ''} ${L.zip || ''} · ${L.cbsa_name}</div>
+      </div>
+      <div class="text-xs px-2 py-0.5 rounded ${verdictColor} whitespace-nowrap">${v}</div>
+    </div>
+
+    <div class="px-4 pt-3 grid grid-cols-2 gap-2 text-sm">
+      <div><div class="text-xs text-muted">List price</div><div class="num text-lg">${fmtMoney(L.listed_price)}</div></div>
+      <div><div class="text-xs text-muted">Bed/Bath/Sqft</div>
+        <div class="num">${L.beds || '—'}/${L.baths || '—'}/${fmtNum(L.sqft, 0)}</div></div>
+      <div><div class="text-xs text-muted">DOM</div><div class="num">${L.days_on_market ?? '—'}</div></div>
+      <div><div class="text-xs text-muted">Built</div><div class="num">${L.year_built ?? '—'}</div></div>
+    </div>
+
+    <div class="px-4 mt-3 pt-3 border-t border-line grid grid-cols-3 gap-2 text-xs">
+      <div>
+        <div class="text-muted">5y rental profit</div>
+        <div class="num text-base ${p.rental_profit_5y > 0 ? 'text-green' : 'text-red'}">${fmtMoney(p.rental_profit_5y)}</div>
+      </div>
+      <div>
+        <div class="text-muted">5y appreciation</div>
+        <div class="num text-base ${p.appreciation_5y_dollars > 0 ? 'text-green' : 'text-red'}">${fmtMoney(p.appreciation_5y_dollars)}</div>
+        <div class="text-muted">${fmtPct(p.appreciation_cagr, 1)}/yr</div>
+      </div>
+      <div>
+        <div class="text-muted">5y total / IRR</div>
+        <div class="num text-base ${p.total_return_5y_dollars > 0 ? 'text-green' : 'text-red'}">${fmtMoney(p.total_return_5y_dollars)}</div>
+        <div class="text-muted">${fmtPct(p.irr_5y, 1)} IRR</div>
+      </div>
+    </div>
+
+    <div class="px-4 mt-2 text-xs flex items-center gap-2 text-muted">
+      <span>cap ${fmtPct(p.cap_rate_y1, 1)}</span>·
+      <span>DSCR ${p.dscr_y1.toFixed(2)}×</span>·
+      <span>CoC ${fmtPct(p.cash_on_cash_y1, 1)}</span>
+      <span class="ml-auto">${avmTag}</span>
+    </div>
+
+    <div class="px-4 mt-3 pt-3 border-t border-line">
+      <div class="text-xs uppercase tracking-wide text-muted mb-1">Decision · ${d.thesis_tag}</div>
+      <ul class="text-xs space-y-1.5 list-disc list-inside">${d.reasons.map(r => `<li>${r}</li>`).join('')}</ul>
+      <div class="mt-2 text-xs ${v === 'GREEN' ? 'text-green' : v === 'YELLOW' ? 'text-yellow' : 'text-red'}">→ ${d.primary_action}</div>
+    </div>
+
+    <div class="px-4 py-3 mt-auto bg-bg border-t border-line flex items-center gap-3 text-xs">
+      <a href="${L.url}" target="_blank" rel="noreferrer" class="text-accent hover:underline">View on Redfin ↗</a>
+      <button class="text-muted hover:text-accent" onclick="prefillFromBuy('${encodeURIComponent(JSON.stringify({price:L.listed_price, sqft:L.sqft, year:L.year_built, rent:Math.round((p.cap_rate_y1*L.listed_price + (L.listed_price*0.012 + 1500))/12 + (p.dscr_y1>0 ? (p.cap_rate_y1*L.listed_price)/12 * 1.2 : 0))}))}')">Underwrite →</button>
+    </div>
+  </div>`;
+}
+
+function prefillFromBuy(payload) {
+  const data = JSON.parse(decodeURIComponent(payload));
+  go('underwrite');
+  if (data.price) { $('uw_purchase_price').value = data.price; $('uw_arv').value = data.price; }
+  if (data.rent && data.rent > 100) $('uw_monthly_rent').value = data.rent;
+}
+window.prefillFromBuy = prefillFromBuy;
+
+['buyCbsa','buySort','buyMin','buyMax','buyRate','buyLimit'].forEach(id =>
+  document.addEventListener('DOMContentLoaded', () => $(id).addEventListener('change', loadBuy))
+);
+document.addEventListener('DOMContentLoaded', () => $('buyRefresh').addEventListener('click', loadBuy));
 
 // ---- Listing ingestion -------------------------------------------------
 
