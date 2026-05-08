@@ -488,7 +488,17 @@ def coverage_map():
     }
 
 
-# Static SPA last so /api routes take precedence
+# Static SPA last so /api routes take precedence. Wrap StaticFiles to send
+# `Cache-Control: no-cache` — the SPA is small (<25KB) and we ship UI
+# updates often, so we'd rather make the browser revalidate every load
+# than ship users a stale dropdown after every commit.
+class _NoCacheStatic(StaticFiles):
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
+
 STATIC = Path(__file__).resolve().parent / "static"
 if STATIC.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
+    app.mount("/", _NoCacheStatic(directory=str(STATIC), html=True), name="static")
