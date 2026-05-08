@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/cache/
+data/reip.duckdb
+data/reip.duckdb.wal
+*.csv
+*.parquet
+.pytest_cache/
+.ipynb_checkpoints/
+dist/
+build/
+*.egg-info/
