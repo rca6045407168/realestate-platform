@@ -629,6 +629,7 @@ async function loadTopZips() {
   let html = '<table class="tight w-full text-sm"><thead><tr>'
     + '<th>Rank</th><th>ZIP</th><th>State</th><th>Metro</th>'
     + '<th class="text-right">ZHVI</th><th class="text-right">ZORI</th>'
+    + '<th class="text-right" title="Last 12 months ZHVI change — momentum signal">12mo</th>'
     + '<th class="text-right">5y IRR</th><th class="text-right">5y total ($)</th>'
     + '<th class="text-right">5y rental ($)</th><th class="text-right">5y appr ($)</th>'
     + '<th class="text-right">cap</th><th class="text-right">DSCR</th><th class="text-right">vac</th>'
@@ -645,6 +646,7 @@ async function loadTopZips() {
       <td class="text-xs">${z.cbsa_name || '—'}</td>
       <td class="text-right num">${fmtMoney(z.typical_price)}</td>
       <td class="text-right num">${fmtMoney(z.typical_rent)}/mo</td>
+      <td class="text-right num ${z.chg_12mo < -0.05 ? 'text-red' : z.chg_12mo > 0.05 ? 'text-green' : 'text-muted'}" title="Trailing 5y CAGR ${fmtPct(z.appreciation_cagr_5y_trail, 1)} · Trailing 2y CAGR ${fmtPct(z.appreciation_cagr_2y_trail, 1)}">${fmtPct(z.chg_12mo, 1)}</td>
       <td class="text-right num ${z.irr_5y > 0.10 ? 'text-green' : z.irr_5y < 0 ? 'text-red' : ''}">${fmtPct(z.irr_5y, 1)}</td>
       <td class="text-right num ${z.total_return_5y_dollars > 0 ? 'text-green' : 'text-red'}">${fmtMoney(z.total_return_5y_dollars)}</td>
       <td class="text-right num ${z.rental_profit_5y > 0 ? 'text-green' : 'text-red'}">${fmtMoney(z.rental_profit_5y)}</td>

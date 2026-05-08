@@ -41,7 +41,10 @@ class ZipReturn:
     cbsa_name: Optional[str]
     typical_price: float
     typical_rent: float
-    appreciation_cagr: float
+    appreciation_cagr: float          # forward projection (momentum-aware blend)
+    appreciation_cagr_5y_trail: float # trailing 5y CAGR (raw)
+    appreciation_cagr_2y_trail: float # trailing 2y CAGR (raw)
+    chg_12mo: float                   # last 12 months change (sanity check)
     appreciation_5y_pct: float
     appreciation_5y_dollars: float
     rental_profit_5y: float
@@ -57,16 +60,14 @@ class ZipReturn:
 
 
 QUERY = """
-WITH zhvi_now AS (
-    SELECT zip, value AS zhvi, period
-    FROM (SELECT zip, value, period, ROW_NUMBER() OVER (PARTITION BY zip ORDER BY period DESC) AS rn FROM zillow_zhvi)
-    WHERE rn = 1
+WITH zhvi_ranked AS (
+    SELECT zip, value, ROW_NUMBER() OVER (PARTITION BY zip ORDER BY period DESC) AS rn
+    FROM zillow_zhvi
 ),
-zhvi_5y AS (
-    SELECT zip, value AS zhvi_5y_ago
-    FROM (SELECT zip, value, ROW_NUMBER() OVER (PARTITION BY zip ORDER BY period DESC) AS rn FROM zillow_zhvi)
-    WHERE rn = 60
-),
+zhvi_now AS  (SELECT zip, value AS zhvi        FROM zhvi_ranked WHERE rn = 1),
+zhvi_12 AS   (SELECT zip, value AS zhvi_12mo   FROM zhvi_ranked WHERE rn = 13),
+zhvi_24 AS   (SELECT zip, value AS zhvi_24mo   FROM zhvi_ranked WHERE rn = 25),
+zhvi_60 AS   (SELECT zip, value AS zhvi_5y_ago FROM zhvi_ranked WHERE rn = 60),
 zori_now AS (
     SELECT zip, value AS zori
     FROM (SELECT zip, value, ROW_NUMBER() OVER (PARTITION BY zip ORDER BY period DESC) AS rn FROM zillow_zori)
@@ -81,13 +82,17 @@ vacancy_per_zip AS (
 )
 SELECT zhvi_now.zip,
        zhvi_now.zhvi,
-       zhvi_5y.zhvi_5y_ago,
+       zhvi_12.zhvi_12mo,
+       zhvi_24.zhvi_24mo,
+       zhvi_60.zhvi_5y_ago,
        zori_now.zori,
        vacancy_per_zip.vac,
        c.cbsa_code, c.cbsa_name, c.state
 FROM zhvi_now
 JOIN zori_now USING (zip)
-LEFT JOIN zhvi_5y USING (zip)
+LEFT JOIN zhvi_12 USING (zip)
+LEFT JOIN zhvi_24 USING (zip)
+LEFT JOIN zhvi_60 USING (zip)
 LEFT JOIN vacancy_per_zip USING (zip)
 LEFT JOIN zip_county_xwalk z ON z.zip = zhvi_now.zip
 LEFT JOIN county_cbsa_xwalk c ON c.fips_county = z.fips_county
@@ -146,11 +151,32 @@ def rank_us(
         price = float(r.zhvi)
         rent  = float(r.zori)
         zhvi_5y = r.zhvi_5y_ago
-        # Trailing 5y CAGR; if not enough history, use 4% national prior
-        if zhvi_5y is None or pd.isna(zhvi_5y) or zhvi_5y <= 0:
-            raw_cagr = 0.04
+        zhvi_2y = r.zhvi_24mo
+        zhvi_12mo = r.zhvi_12mo
+
+        # Compute multiple trailing CAGRs so we can be momentum-aware.
+        # Florida 2026 case: 5y CAGR is +5–8% but last 12mo is -5 to -14%.
+        # A pure 5y projection extrapolates the 2021-22 boom forward; that's
+        # the bias the user's friend (correctly) called out.
+        cagr_5y = (price / float(zhvi_5y)) ** (1/5) - 1 if (zhvi_5y is not None and not pd.isna(zhvi_5y) and zhvi_5y > 0) else None
+        cagr_2y = (price / float(zhvi_2y)) ** (1/2) - 1 if (zhvi_2y is not None and not pd.isna(zhvi_2y) and zhvi_2y > 0) else None
+        chg_12mo = (price / float(zhvi_12mo)) - 1   if (zhvi_12mo is not None and not pd.isna(zhvi_12mo) and zhvi_12mo > 0) else None
+
+        # Forward-projection blend: weight recent more.
+        if cagr_2y is not None and cagr_5y is not None:
+            raw_cagr = 0.60 * cagr_2y + 0.40 * cagr_5y
+        elif cagr_5y is not None:
+            raw_cagr = cagr_5y
+        elif cagr_2y is not None:
+            raw_cagr = cagr_2y
         else:
-            raw_cagr = (price / float(zhvi_5y)) ** (1 / 5) - 1
+            raw_cagr = 0.04   # national long-run prior
+
+        # If the last 12mo is sharply negative (>5% drop), force the projection
+        # to acknowledge the rollover — don't let the 5y boom anchor.
+        if chg_12mo is not None and chg_12mo < -0.05:
+            raw_cagr = min(raw_cagr, chg_12mo)   # honor the recent crash
+
         archetype = archetypes_by_cbsa.get(str(r.cbsa_code) if r.cbsa_code else None) or "Mixed"
         appr_cagr = max(-0.05, min(0.10, raw_cagr * overlay_by_arch.get(archetype, 0.85)))
         appr_5y_pct = (1 + appr_cagr) ** HOLD_YEARS - 1
@@ -239,6 +265,9 @@ def rank_us(
             typical_price=round(_safe(price)),
             typical_rent=round(_safe(rent)),
             appreciation_cagr=round(_safe(appr_cagr), 4),
+            appreciation_cagr_5y_trail=round(_safe(cagr_5y), 4),
+            appreciation_cagr_2y_trail=round(_safe(cagr_2y), 4),
+            chg_12mo=round(_safe(chg_12mo), 4),
             appreciation_5y_pct=round(_safe(appr_5y_pct), 4),
             appreciation_5y_dollars=round(_safe(appr_5y_dollars), 2),
             rental_profit_5y=round(_safe(rental_profit_5y), 2),

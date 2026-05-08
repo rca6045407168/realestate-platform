@@ -149,8 +149,11 @@
   <section id="screen-topzips" class="screen hidden">
     <div class="text-xs text-muted mb-3">
       Ranks every US zip with both ZHVI + ZORI coverage by 5y expected IRR.
-      Per-zip projection uses the same engine as per-property underwriting.
-      Click any row to deep-link into Redfin / Zillow for actual listings.
+      Forward appreciation = momentum-aware blend (60% trailing 2y + 40% trailing 5y),
+      with a recent-rollover floor: any zip down >5% in the last 12 months has its
+      forward projection capped at the actual 12mo trend. The 12mo column shows
+      that signal so you can see why a zip is downgraded.
+      Click any row to deep-link into Redfin for actual listings.
     </div>
     <div class="flex flex-wrap gap-3 mb-4 items-center">
       <label class="text-sm text-muted">State</label>
