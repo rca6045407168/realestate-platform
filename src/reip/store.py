@@ -74,6 +74,17 @@ CREATE TABLE IF NOT EXISTS zip_county_xwalk (
     zip VARCHAR, fips_county VARCHAR, weight DOUBLE,
     PRIMARY KEY (zip, fips_county)
 );
+CREATE TABLE IF NOT EXISTS schools_zip (
+    zip VARCHAR PRIMARY KEY,
+    school_count INTEGER,
+    elementary_count INTEGER,
+    middle_count INTEGER,
+    high_count INTEGER,
+    charter_count INTEGER,
+    total_enrollment BIGINT,
+    avg_student_teacher_ratio DOUBLE,
+    refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS zip_avm_signal (
     zip VARCHAR PRIMARY KEY,
     zhvi DOUBLE,                    -- Zillow's smoothed value index, latest

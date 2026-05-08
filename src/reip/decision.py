@@ -60,6 +60,8 @@ def build(
     rec_verdict: str,
     rec_reasons: list[str],
     rec_primary_action: Optional[str],
+    schools: Optional[dict] = None,
+    county_median_income: Optional[float] = None,
 ) -> Decision:
     reasons: list[str] = []
 
@@ -133,7 +135,32 @@ def build(
     elif avm_direction == "aligned":
         reasons.append("AVM signal: aligned — sales clearing in line with the index. No edge.")
 
-    # 5. Rec-gate failures (only show top 1–2 most actionable)
+    # 5. Neighborhood overlay: schools + income
+    if schools and schools.get("school_count"):
+        ratio = schools.get("avg_st_ratio")
+        ratio_str = f", student/teacher {ratio:.0f}:1" if ratio else ""
+        reasons.append(
+            f"Schools: {schools['school_count']} public schools serving "
+            f"this zip ({schools.get('elementary_count', 0)} elementary, "
+            f"{schools.get('high_count', 0)} high), "
+            f"{schools.get('charter_count', 0)} charter{ratio_str}."
+        )
+    if county_median_income:
+        # Affordability framing: rent should be ≤30% of income for sustainable demand
+        annual_rent = (projection.cap_rate_y1 or 0) * (listing.get("listed_price") or 0) + 0
+        # Easier: compute ZORI×12 / median_income to avoid double-pulling rent
+        burden_pct = None
+        if listing.get("listed_price") and projection.cap_rate_y1:
+            # Approximate annual rent: NOI / (1−opex_ratio), but simpler is
+            # gross_rent_annual ≈ cap_rate * price / (1−0.40) — noisy. Skip.
+            pass
+        reasons.append(
+            f"Local median household income {_money(county_median_income)} "
+            f"— a {_money(listing.get('listed_price'))} home is "
+            f"{(listing.get('listed_price') or 0) / max(county_median_income, 1):.1f}× income."
+        )
+
+    # 6. Rec-gate failures (only show top 1–2 most actionable)
     if rec_reasons:
         # Show the first 1–2 — they're already in plain English from the gate
         for r in rec_reasons[:2]:

@@ -275,9 +275,14 @@ def listings_markets():
 @app.get("/api/listings/buy")
 def listings_buy(
     cbsa: str = Query("32820", description="CBSA code (default Memphis 32820)"),
+    zip: Optional[str] = Query(None, description="Filter to a single ZIP code (5 digits)"),
     limit: int = 12,
     min_price: int = 50_000,
     max_price: int = 500_000,
+    min_irr: Optional[float] = Query(None, description="Minimum 5y IRR (0–1)"),
+    min_dscr: Optional[float] = Query(None, description="Minimum stabilized DSCR"),
+    min_cap: Optional[float] = Query(None, description="Minimum year-1 cap rate (0–1)"),
+    min_school_count: Optional[int] = Query(None, description="Minimum public schools serving the zip"),
     mortgage_rate: float = 0.07,
     ltv: float = 0.75,
     sort: str = Query("total_return", pattern="^(total_return|cashflow|appreciation|irr)$"),
@@ -322,7 +327,48 @@ def listings_buy(
     ).fetchdf()
     avm_by_zip = {r.zip: (r.direction, r.divergence_z) for r in avm_rows.itertuples()}
 
+    # Schools overlay for the zips in this CBSA
+    schools_rows = con.execute(
+        """SELECT s.zip, s.school_count, s.elementary_count, s.middle_count,
+                  s.high_count, s.charter_count, s.total_enrollment,
+                  s.avg_student_teacher_ratio
+           FROM schools_zip s
+           JOIN zip_county_xwalk z ON z.zip = s.zip
+           JOIN county_cbsa_xwalk c ON c.fips_county = z.fips_county
+           WHERE c.cbsa_code = ?""",
+        [str(cbsa)],
+    ).fetchdf()
+    schools_by_zip = {
+        r.zip: {
+            "school_count":      int(r.school_count or 0),
+            "elementary_count":  int(r.elementary_count or 0),
+            "middle_count":      int(r.middle_count or 0),
+            "high_count":        int(r.high_count or 0),
+            "charter_count":     int(r.charter_count or 0),
+            "total_enrollment":  int(r.total_enrollment or 0),
+            "avg_st_ratio":      None if pd.isna(r.avg_student_teacher_ratio)
+                                 else round(float(r.avg_student_teacher_ratio), 1),
+        }
+        for r in schools_rows.itertuples()
+    }
+
+    # Median household income per zip via the zip→county→ACS hop
+    income_rows = con.execute(
+        """SELECT z.zip, a.median_household_income
+           FROM zip_county_xwalk z
+           JOIN acs_county a ON a.fips_county = z.fips_county
+           JOIN county_cbsa_xwalk c ON c.fips_county = z.fips_county
+           WHERE c.cbsa_code = ?
+             AND a.year = (SELECT MAX(year) FROM acs_county)""",
+        [str(cbsa)],
+    ).fetchdf()
+    income_by_zip = {
+        r.zip: int(r.median_household_income) if not pd.isna(r.median_household_income) else None
+        for r in income_rows.itertuples()
+    }
+
     results = []
+    target_zip = (zip or "").strip().zfill(5) if zip else None
     for L in listings:
         d = L.__dict__
         # Drop incomplete cards: vacant lots / non-residential parcels usually
@@ -333,6 +379,8 @@ def listings_buy(
         if not d.get("zip"):
             continue
         if d.get("beds") is None and d.get("sqft") is None:
+            continue
+        if target_zip and str(d["zip"]).zfill(5) != target_zip:
             continue
         try:
             p = proj_mod.project(con, d, archetype=archetype,
@@ -359,13 +407,27 @@ def listings_buy(
             avm_direction=avm_dir, avm_z=float(avm_z) if avm_z is not None else None,
             rec_verdict=rec.verdict.value, rec_reasons=rec.reasons,
             rec_primary_action=rec.primary_action,
+            schools=schools_by_zip.get(d["zip"]),
+            county_median_income=income_by_zip.get(d["zip"]),
         )
 
+        # Hard threshold filters — honored before sort so the user gets
+        # a clean, action-ready list.
+        if min_irr  is not None and p.irr_5y       < min_irr:  continue
+        if min_dscr is not None and p.dscr_y1      < min_dscr: continue
+        if min_cap  is not None and p.cap_rate_y1  < min_cap:  continue
+
+        schools = schools_by_zip.get(d["zip"])
+        if min_school_count is not None and (not schools or schools.get("school_count", 0) < min_school_count):
+            continue
+
         results.append({
-            "listing": _clean(d),
-            "projection": p.__dict__,
-            "avm": {"direction": avm_dir,
-                    "z": float(avm_z) if avm_z is not None else None},
+            "listing":        _clean(d),
+            "projection":     p.__dict__,
+            "avm":            {"direction": avm_dir,
+                               "z": float(avm_z) if avm_z is not None else None},
+            "schools":        schools,
+            "county_median_income": income_by_zip.get(d["zip"]),
             "recommendation": rec.to_dict(),
             "decision": {
                 "verdict":        decision.verdict,

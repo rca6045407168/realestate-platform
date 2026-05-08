@@ -37,6 +37,7 @@ from .loaders import (
     acs,
     fhfa_hpi,
     static_data,
+    schools as schools_loader,
 )
 
 
@@ -54,6 +55,7 @@ SOURCES = {
     "bls":         bls_qcew,
     "acs":         acs,
     "fhfa":        fhfa_hpi,
+    "schools":     schools_loader,
 }
 
 

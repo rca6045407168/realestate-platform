@@ -369,17 +369,30 @@ document.addEventListener('DOMContentLoaded', () => {
 // ---- Buy ideas screen ----------------------------------------------------
 
 async function loadBuy() {
-  const cbsa = $('buyCbsa').value;
-  const sort = $('buySort').value;
-  const min = +$('buyMin').value;
-  const max = +$('buyMax').value;
-  const rate = +$('buyRate').value;
-  const limit = +$('buyLimit').value || 12;
+  const params = new URLSearchParams({
+    cbsa: $('buyCbsa').value,
+    sort: $('buySort').value,
+    min_price: $('buyMin').value,
+    max_price: $('buyMax').value,
+    mortgage_rate: $('buyRate').value,
+    limit: $('buyLimit').value || '12',
+  });
+  const zip = $('buyZip').value.trim();
+  if (zip) params.set('zip', zip);
+  for (const [id, key] of [
+    ['buyMinIrr',     'min_irr'],
+    ['buyMinDscr',    'min_dscr'],
+    ['buyMinCap',     'min_cap'],
+    ['buyMinSchools', 'min_school_count'],
+  ]) {
+    const v = $(id).value.trim();
+    if (v !== '') params.set(key, v);
+  }
   $('buyHost').innerHTML = '<div class="col-span-3 p-6 text-muted">Pulling live listings + projecting 5y returns…</div>';
   $('buyMeta').textContent = '';
   let r;
   try {
-    r = await api(`/listings/buy?cbsa=${cbsa}&limit=${limit}&min_price=${min}&max_price=${max}&mortgage_rate=${rate}&sort=${sort}`);
+    r = await api('/listings/buy?' + params.toString());
   } catch (e) {
     $('buyHost').innerHTML = `<div class="col-span-3 p-6 text-red">${e.message}</div>`;
     return;
@@ -447,6 +460,17 @@ function renderBuyCard(r) {
       <span class="ml-auto">${avmTag}</span>
     </div>
 
+    <div class="px-4 mt-3 pt-3 border-t border-line text-xs flex flex-wrap gap-x-3 gap-y-1">
+      ${r.schools && r.schools.school_count ? `
+        <span class="text-muted">Schools:</span>
+        <span><b>${r.schools.school_count}</b> public</span>
+        <span>· ${r.schools.elementary_count}E · ${r.schools.middle_count}M · ${r.schools.high_count}H</span>
+        ${r.schools.charter_count ? `<span>· ${r.schools.charter_count} charter</span>` : ''}
+        ${r.schools.avg_st_ratio ? `<span>· ${r.schools.avg_st_ratio}:1 st/teach</span>` : ''}
+      ` : '<span class="text-muted">Schools: —</span>'}
+      ${r.county_median_income ? `<span class="ml-auto text-muted">County median income <b>${fmtMoney(r.county_median_income)}</b></span>` : ''}
+    </div>
+
     <div class="px-4 mt-3 pt-3 border-t border-line">
       <div class="text-xs uppercase tracking-wide text-muted mb-1">Decision · ${d.thesis_tag}</div>
       <ul class="text-xs space-y-1.5 list-disc list-inside">${d.reasons.map(r => `<li>${r}</li>`).join('')}</ul>
@@ -468,7 +492,8 @@ function prefillFromBuy(payload) {
 }
 window.prefillFromBuy = prefillFromBuy;
 
-['buyCbsa','buySort','buyMin','buyMax','buyRate','buyLimit'].forEach(id =>
+['buyCbsa','buySort','buyMin','buyMax','buyRate','buyLimit',
+ 'buyZip','buyMinIrr','buyMinDscr','buyMinCap','buyMinSchools'].forEach(id =>
   document.addEventListener('DOMContentLoaded', () => $(id).addEventListener('change', loadBuy))
 );
 document.addEventListener('DOMContentLoaded', () => $('buyRefresh').addEventListener('click', loadBuy));
