@@ -24,6 +24,12 @@ async function api(path, opts={}) {
   return r.json();
 }
 
+// Reusable spinner. `text` shows next to the spinner; `colSpan` is for table-cell embeds.
+function spinnerHTML(text, opts = {}) {
+  const cls = opts.colSpan ? `col-span-${opts.colSpan}` : '';
+  return `<div class="spinner-row ${cls}"><div class="spinner"></div><div>${text || 'Loading…'}</div></div>`;
+}
+
 // ---- routing --------------------------------------------------------------
 
 function go(name) {
@@ -46,7 +52,7 @@ async function loadDashboard() {
   const limit = +$('limit').value || 50;
   const qs = new URLSearchParams({ sort_by: sortBy, min_pop: minPop, limit });
   if (archetype) qs.set('archetype', archetype);
-  $('msaTableHost').innerHTML = '<div class="p-6 text-muted text-sm">Loading…</div>';
+  $('msaTableHost').innerHTML = spinnerHTML('Scoring MSAs…');
   try {
     MSAS = await api('/msas?' + qs);
   } catch (e) {
@@ -97,9 +103,12 @@ async function loadDashboard() {
 // ---- MSA → LIVE LISTINGS jump ------------------------------------------
 
 async function openMsaListings(cbsa_code, cbsa_name) {
-  // Switch to Buy ideas, ensure the dropdown has this CBSA selected
-  // (add a temporary option if the metro isn't in MARKETS), and run.
-  go('buy');
+  // Switch to Buy ideas FIRST, wipe stale state so the user sees a clean
+  // spinner instead of leftover cards from the previous market.
+  document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+  $('screen-buy').classList.remove('hidden');
+  $('buyHost').innerHTML = spinnerHTML(`Loading ${cbsa_name}…`, { colSpan: 3 });
+  $('buyMeta').textContent = '';
   await loadMarkets();
   const sel = $('buyCbsa');
   let opt = Array.from(sel.options).find(o => o.value === cbsa_code);
@@ -119,7 +128,7 @@ window.openMsaListings = openMsaListings;
 
 async function openMsa(cbsa_code) {
   go('msa');
-  $('msaDetailHost').innerHTML = '<div class="p-6 text-muted">Loading…</div>';
+  $('msaDetailHost').innerHTML = spinnerHTML('Loading MSA breakdown…');
   let m;
   try { m = await api('/msas/' + cbsa_code); }
   catch (e) { $('msaDetailHost').innerHTML = `<div class="text-red">${e.message}</div>`; return; }
@@ -220,7 +229,7 @@ async function runUnderwrite() {
   body.rehab_overrun_risk = $('uw_rehab_overrun_risk').checked;
   body.financing_concentration_risk = $('uw_financing_concentration_risk').checked;
   body.exit_risk_no_ltr_fallback = $('uw_exit_risk_no_ltr_fallback').checked;
-  $('uwResultHost').innerHTML = '<div class="text-muted">Underwriting…</div>';
+  $('uwResultHost').innerHTML = spinnerHTML('Running pro forma + recommendation gate…');
   let r;
   try { r = await api('/underwritings', { method: 'POST', body: JSON.stringify(body) }); }
   catch (e) { $('uwResultHost').innerHTML = `<div class="text-red">${e.message}</div>`; return; }
@@ -343,7 +352,7 @@ window.reapplyMitigations = reapplyMitigations;
 async function loadAvm() {
   const dir = $('avmDir').value;
   const min = +$('avmMin').value, max = +$('avmMax').value;
-  $('avmTableHost').innerHTML = '<div class="p-6 text-muted">Loading…</div>';
+  $('avmTableHost').innerHTML = spinnerHTML(`Computing AVM divergence (${dir} zips)…`);
   let rows;
   try { rows = await api(`/avm?direction=${dir}&min_price=${min}&max_price=${max}&limit=50`); }
   catch (e) { $('avmTableHost').innerHTML = `<div class="p-6 text-red">${e.message}</div>`; return; }
@@ -456,7 +465,10 @@ async function loadBuy() {
     if (v !== '') params.set(key, v);
   }
   const isAll = $('buyCbsa').value === 'all';
-  $('buyHost').innerHTML = `<div class="col-span-3 p-6 text-muted">${isAll ? 'Fanning out to all markets in parallel — first call takes ~30s, cached after.' : 'Pulling live listings + projecting 5y returns…'}</div>`;
+  const msg = isAll
+    ? 'Fanning out to all markets in parallel — first call takes ~30s, cached after.'
+    : 'Pulling live listings + projecting 5y returns…';
+  $('buyHost').innerHTML = spinnerHTML(msg, { colSpan: 3 });
   $('buyMeta').textContent = '';
   let r;
   try {
@@ -581,7 +593,7 @@ document.addEventListener('DOMContentLoaded', () => $('buyRefresh').addEventList
 async function ingestLink() {
   const url = $('linkInput').value.trim();
   if (!url) return;
-  $('linkOut').innerHTML = '<span class="text-muted">Fetching…</span>';
+  $('linkOut').innerHTML = `<div class="flex items-center gap-2 text-muted text-xs"><div class="spinner" style="width:14px;height:14px;border-width:2px;"></div>Fetching listing details…</div>`;
   let p;
   try {
     p = await api('/properties/ingest', { method: 'POST', body: JSON.stringify({ url }) });
