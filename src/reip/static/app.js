@@ -104,24 +104,33 @@ async function loadDashboard() {
 // ---- MSA → LIVE LISTINGS jump ------------------------------------------
 
 async function openMsaListings(cbsa_code, cbsa_name) {
-  // Switch to Buy ideas FIRST, wipe stale state so the user sees a clean
-  // spinner instead of leftover cards from the previous market.
-  document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
-  $('screen-buy').classList.remove('hidden');
-  $('buyHost').innerHTML = spinnerHTML(`Loading ${cbsa_name}…`, { colSpan: 3 });
-  $('buyMeta').textContent = '';
+  // Smart routing: if the CBSA has a verified Redfin region_id, jump to
+  // Buy ideas (live property cards). Otherwise, jump to Top zips (US)
+  // pre-filtered to this CBSA — the user sees ranked zips in this metro
+  // with deep-links to Redfin/Zillow for browsing actual listings.
   await loadMarkets();
   const sel = $('buyCbsa');
-  let opt = Array.from(sel.options).find(o => o.value === cbsa_code);
-  if (!opt) {
-    opt = document.createElement('option');
-    opt.value = cbsa_code;
-    opt.textContent = cbsa_name + '  —  (not yet wired for live listings)';
-    opt.dataset.unmapped = '1';
-    sel.appendChild(opt);
+  const opt = Array.from(sel.options).find(o => o.value === cbsa_code);
+  const isMapped = opt && opt.dataset.unmapped !== '1';
+
+  if (isMapped) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+    $('screen-buy').classList.remove('hidden');
+    $('buyHost').innerHTML = spinnerHTML(`Loading ${cbsa_name}…`, { colSpan: 3 });
+    $('buyMeta').textContent = '';
+    sel.value = cbsa_code;
+    loadBuy();
+    return;
   }
-  sel.value = cbsa_code;
-  loadBuy();
+
+  // Unmapped: jump to Top zips with this CBSA filter
+  document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+  $('screen-topzips').classList.remove('hidden');
+  $('tzCbsa').value = cbsa_code;
+  $('tzState').value = '';
+  $('tzHost').innerHTML = spinnerHTML(`Loading top zips in ${cbsa_name}…`);
+  $('tzMeta').textContent = `→ ${cbsa_name} — ranking every ZIP in this metro by 5y IRR`;
+  loadTopZips();
 }
 window.openMsaListings = openMsaListings;
 
