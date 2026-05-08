@@ -30,11 +30,76 @@ uv pip install -e .
 
 reip init                                  # create schema
 reip ingest                                # pull all default sources
-reip top --top 25 --min-completeness 0.85  # ranked zips
+
+reip serve                                 # API + web UI on http://localhost:8787
+reip msa-rank --top 25                     # CLI alternative
 ```
 
 Total cold ingest is ~10–15 minutes (Redfin's 1GB TSV dominates). Subsequent
 runs are cache-hit.
+
+## Web UI (`reip serve`)
+
+FastAPI backend + single-file SPA. Four screens:
+
+- **MSA dashboard** — sortable / filterable rankings with archetype color
+  coding and completeness bars; click any row for the full breakdown.
+- **Underwriting workspace** — paste financing assumptions, get a single
+  GREEN / YELLOW / RED verdict, plain-English reasons, BRRRR refi,
+  5-yr IRR, and a sensitivity grid behind a 'show me the math' toggle.
+  Mitigation checkboxes live-update the verdict (no re-submit needed).
+- **AVM signal** — zip-level ZHVI vs Redfin sale divergence, hot/cold/aligned.
+- **Remarks parser** — paste any MLS public-remarks blob, see the 7-flag
+  alpha stack and matched terms.
+
+API surface (auto-documented at `/docs`):
+
+```
+GET  /api/msas                        ranked MSAs (sort_by, archetype, min_pop, limit)
+GET  /api/msas/{cbsa_code}            full breakdown + percentile ranks
+GET  /api/avm                         zip mispricing (direction=cold|hot|all)
+POST /api/remarks                     parse free-text MLS remarks
+POST /api/underwritings               pro forma + sensitivity + recommendation
+POST /api/underwritings/mitigations   re-run gate with verified mitigations
+GET  /api/coverage-map                county-level coverage (Phase-2 stub)
+```
+
+## Recommendation gate (Framework §9.4)
+
+Three verdicts. **The thresholds are the platform's moral center — not
+softened when a deal sits just below.**
+
+```
+GREEN_THRESHOLDS = {
+    "stabilized_dscr_min":               1.30,
+    "refi_appraisal_stress_min_ltv":     0.70,
+    "insurance_trend_max_pct":           0.20,
+    "climate_pct_max":                   0.75,
+    "alpha_stack_min_flags":              2,
+    "stress_min_coc_on_residual":        0.08,
+}
+YELLOW_THRESHOLDS = { "stabilized_dscr_min": 1.10, "stabilized_dscr_max": 1.30 }
+# RED: any YELLOW threshold fails without verified mitigations,
+#      OR DSCR < 1.10, OR climate top decile, OR sensitivity → negative CF.
+```
+
+**Memphis fixture acceptance** (long paper Table 9): 1.07× stabilized DSCR
+screens RED on default rules, upgrades to YELLOW only with all 5 verified
+mitigations (term sheet + reserves + contractor bid + hard-money primary &
+backup + LTR fallback PM). The tests assert exactly that.
+
+Mitigation rules:
+
+```python
+REQUIRED_MITIGATIONS_BY_FAILURE = {
+    "thin_dscr":           ["verified_70pct_ltv_term_sheet",
+                            "documented_capital_reserve_min_25k"],
+    "rehab_overrun_risk":  ["signed_contractor_bid"],
+    "financing_risk":      ["committed_hard_money_primary",
+                            "committed_hard_money_backup"],
+    "exit_risk":           ["ltr_fallback_pm_identified"],
+}
+```
 
 ## Data sources
 

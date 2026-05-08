@@ -21,7 +21,7 @@ from .store import connect, init as store_init
 from . import (
     score as score_zip, msa_score, alpha as alpha_mod, underwriting,
     snapshots, freshness as fresh_mod, backtest as backtest_mod, report as report_mod,
-    render, avm as avm_mod, remarks as remarks_mod,
+    render, avm as avm_mod, remarks as remarks_mod, recommendation as rec_mod,
 )
 from .loaders import (
     zillow,
@@ -356,6 +356,17 @@ def underwrite(purchase_price, rehab_cost, arv, monthly_rent, mortgage_rate,
     if show_sensitivity:
         click.echo("\nSensitivity (rent × vacancy × exit cap → IRR / equity multiple):")
         click.echo(underwriting.sensitivity(a).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+
+
+@cli.command()
+@click.option("--host", default="127.0.0.1")
+@click.option("--port", default=8787, type=int)
+@click.option("--reload", is_flag=True)
+def serve(host, port, reload):
+    """Run the FastAPI backend + SPA. Open http://localhost:8787/."""
+    import uvicorn
+    click.echo(f"→ http://{host}:{port}/")
+    uvicorn.run("reip.api:app", host=host, port=port, reload=reload)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>reip — Real Estate Investment Platform</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { theme: { extend: { colors: {
+    bg: '#0d1117', card: '#161b22', line: '#30363d',
+    fg: '#c9d1d9', muted: '#8b949e', accent: '#58a6ff',
+    green: '#3fb950', yellow: '#d29922', red: '#f85149',
+    cyan: '#79c0ff', magenta: '#d2a8ff'
+  }}}}</script>
+  <style>
+    body { background: #0d1117; color: #c9d1d9; font-family: ui-sans-serif, system-ui, sans-serif; }
+    .num { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+    table.tight th { font-weight: 500; color: #8b949e; padding: .5rem .75rem; text-align: left; border-bottom: 1px solid #30363d; }
+    table.tight td { padding: .5rem .75rem; border-bottom: 1px solid #30363d; }
+    table.tight tbody tr:hover { background: #161b22; cursor: pointer; }
+    .verdict-RED    { background: rgba(248,81,73,.15);  color: #f85149; border: 1px solid #f85149; }
+    .verdict-YELLOW { background: rgba(210,153,34,.15); color: #d29922; border: 1px solid #d29922; }
+    .verdict-GREEN  { background: rgba(63,185,80,.15);  color: #3fb950; border: 1px solid #3fb950; }
+    .arch-Coastal-Gateway     { color: #79c0ff; }
+    .arch-Sun-Belt-Growth     { color: #3fb950; }
+    .arch-Cashflow-Heartland  { color: #d29922; }
+    .arch-Boom-Bust-Beta      { color: #d2a8ff; }
+    .arch-Resource---Niche    { color: #58a6ff; }
+    .arch-Mixed               { color: #8b949e; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<div id="app" class="max-w-[1400px] mx-auto p-6">
+
+  <header class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl text-accent font-semibold">reip</h1>
+      <div class="text-muted text-sm">deal-screening + underwriting platform</div>
+    </div>
+    <nav class="flex gap-2 text-sm">
+      <button onclick="go('dashboard')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">MSA dashboard</button>
+      <button onclick="go('underwrite')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Underwrite</button>
+      <button onclick="go('avm')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">AVM signal</button>
+      <button onclick="go('remarks')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Remarks parser</button>
+    </nav>
+  </header>
+
+  <!-- ============== DASHBOARD ============== -->
+  <section id="screen-dashboard" class="screen">
+    <div class="flex flex-wrap gap-3 mb-4 items-center">
+      <label class="text-sm text-muted">Sort by</label>
+      <select id="sortBy" class="bg-bg border border-line rounded px-2 py-1 text-sm">
+        <option value="total">Total return</option>
+        <option value="appreciation">Appreciation</option>
+        <option value="cashflow">Cashflow</option>
+      </select>
+      <label class="text-sm text-muted">Archetype</label>
+      <select id="archetypeFilter" class="bg-bg border border-line rounded px-2 py-1 text-sm">
+        <option value="">All</option>
+        <option>Coastal Gateway</option>
+        <option>Sun Belt Growth</option>
+        <option>Cashflow Heartland</option>
+        <option>Boom-Bust Beta</option>
+        <option>Resource & Niche</option>
+        <option>Mixed</option>
+      </select>
+      <label class="text-sm text-muted">Min pop</label>
+      <input id="minPop" type="number" value="250000" class="bg-bg border border-line rounded px-2 py-1 text-sm w-28">
+      <label class="text-sm text-muted">Top N</label>
+      <input id="limit" type="number" value="50" class="bg-bg border border-line rounded px-2 py-1 text-sm w-20">
+    </div>
+    <div id="msaTableHost" class="bg-card rounded border border-line overflow-hidden">
+      <div class="p-6 text-muted text-sm">Loading…</div>
+    </div>
+  </section>
+
+  <!-- ============== MSA DETAIL ============== -->
+  <section id="screen-msa" class="screen hidden">
+    <button class="text-sm text-muted hover:text-accent mb-4" onclick="go('dashboard')">← back to dashboard</button>
+    <div id="msaDetailHost"></div>
+  </section>
+
+  <!-- ============== UNDERWRITE ============== -->
+  <section id="screen-underwrite" class="screen hidden">
+    <div class="grid lg:grid-cols-2 gap-6">
+      <div class="bg-card rounded border border-line p-5">
+        <div class="text-xs uppercase tracking-wide text-muted mb-3">Property + financing</div>
+        <div class="space-y-3" id="uwForm"></div>
+        <button id="uwSubmit" class="mt-4 px-4 py-2 rounded bg-accent text-bg font-medium hover:opacity-90 w-full">
+          Run underwriting → recommendation
+        </button>
+      </div>
+      <div id="uwResultHost" class="space-y-4"></div>
+    </div>
+  </section>
+
+  <!-- ============== AVM ============== -->
+  <section id="screen-avm" class="screen hidden">
+    <div class="flex flex-wrap gap-3 mb-4 items-center">
+      <label class="text-sm text-muted">Direction</label>
+      <select id="avmDir" class="bg-bg border border-line rounded px-2 py-1 text-sm">
+        <option value="cold">Cold (sales ≤ ZHVI → buy)</option>
+        <option value="hot">Hot (sales ≥ ZHVI → momentum)</option>
+        <option value="all">All</option>
+      </select>
+      <label class="text-sm text-muted">Min price</label>
+      <input id="avmMin" type="number" value="80000" class="bg-bg border border-line rounded px-2 py-1 text-sm w-32">
+      <label class="text-sm text-muted">Max price</label>
+      <input id="avmMax" type="number" value="600000" class="bg-bg border border-line rounded px-2 py-1 text-sm w-32">
+    </div>
+    <div id="avmTableHost" class="bg-card rounded border border-line overflow-hidden"></div>
+  </section>
+
+  <!-- ============== REMARKS ============== -->
+  <section id="screen-remarks" class="screen hidden">
+    <div class="max-w-3xl">
+      <textarea id="remarksText" rows="6" placeholder="Paste MLS public remarks here..."
+        class="w-full bg-card border border-line rounded p-3 text-sm font-mono"></textarea>
+      <button id="remarksRun" class="mt-3 px-4 py-2 rounded bg-accent text-bg font-medium">Parse</button>
+      <div id="remarksOut" class="mt-4"></div>
+    </div>
+  </section>
+
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

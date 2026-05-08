@@ -9,6 +9,8 @@ data/reip.duckdb.wal
 *.parquet
 *.html
 data/reip-report.html
+# Re-include the SPA shell (the *.html ignore above masks it).
+!src/reip/static/index.html
 .pytest_cache/
 .ipynb_checkpoints/
 dist/
