@@ -20,7 +20,8 @@ import pandas as pd
 from .store import connect, init as store_init
 from . import (
     score as score_zip, msa_score, alpha as alpha_mod, underwriting,
-    snapshots, freshness as fresh_mod, backtest as backtest_mod, report as report_mod, render,
+    snapshots, freshness as fresh_mod, backtest as backtest_mod, report as report_mod,
+    render, avm as avm_mod, remarks as remarks_mod,
 )
 from .loaders import (
     zillow,
@@ -238,7 +239,7 @@ def report(out, blend):
     if raw.empty:
         click.echo("No MSA features — run `reip ingest` first."); sys.exit(1)
     scored = msa_score.with_archetype(msa_score.score(raw, blend_w_appr=blend))
-    p = report_mod.build(scored, out)
+    p = report_mod.build(scored, out, con=con)
     click.echo(f"Wrote {p}  (open in your browser; no server needed)")
 
 
@@ -284,6 +285,47 @@ def alpha(out):
     if out:
         df.to_csv(out, index=False)
     click.echo(df.sort_values("alpha_stack", ascending=False).head(15).to_string(index=False))
+
+
+@cli.command()
+@click.option("--top", "n", default=25)
+@click.option("--direction", type=click.Choice(["hot", "cold", "all"]), default="cold",
+              help="hot = sales clearing above ZHVI; cold = below; all = both tails")
+@click.option("--min-price", default=0, type=float)
+@click.option("--max-price", default=2_000_000, type=float)
+@click.option("--out", type=click.Path(), default=None)
+def avm(n, direction, min_price, max_price, out):
+    """Zip-level AVM mispricing signal (§5.7 Information alpha).
+
+    Compares Zillow ZHVI (smoothed value index) to recent Redfin median
+    sale price by zip. 'cold' zips = sales clearing below the index =
+    buying opportunities; 'hot' zips = sales clearing above = momentum.
+    """
+    con = connect()
+    avm_mod.persist(con)
+    df = con.execute("SELECT * FROM zip_avm_signal WHERE zhvi BETWEEN ? AND ?",
+                     [min_price, max_price]).df()
+    if direction != "all":
+        df = df[df["direction"] == direction]
+    df = df.sort_values("divergence_z", ascending=(direction == "cold")).head(n)
+    if out:
+        df.to_csv(out, index=False)
+    click.echo(df.to_string(index=False, float_format=lambda x: f"{x:,.4f}"))
+
+
+@cli.command()
+@click.argument("text")
+def remarks(text):
+    """Parse free-text MLS remarks for behavioral / distressed signals."""
+    sigs = remarks_mod.parse(text)
+    click.echo(json.dumps({
+        "motivated": sigs.motivated, "distressed": sigs.distressed,
+        "use_change": sigs.use_change, "assumable": sigs.assumable,
+        "price_cut": sigs.price_cut, "short_sale": sigs.short_sale,
+        "probate": sigs.probate,
+        "score": round(sigs.score, 3),
+        "matched_terms": list(sigs.matched_terms),
+    }, indent=2))
 
 
 @cli.command()

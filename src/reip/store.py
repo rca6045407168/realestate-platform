@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS zip_county_xwalk (
     zip VARCHAR, fips_county VARCHAR, weight DOUBLE,
     PRIMARY KEY (zip, fips_county)
 );
+CREATE TABLE IF NOT EXISTS zip_avm_signal (
+    zip VARCHAR PRIMARY KEY,
+    zhvi DOUBLE,                    -- Zillow's smoothed value index, latest
+    redfin_sale_90d DOUBLE,         -- Avg Redfin median_sale_price, last 90d
+    divergence_pct DOUBLE,          -- (redfin_sale - zhvi) / zhvi
+    divergence_z DOUBLE,            -- z-score of divergence_pct across all zips
+    direction VARCHAR,              -- 'hot' (sales > index) | 'cold' (sales < index) | 'aligned'
+    refreshed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS source_freshness (
     source_name VARCHAR PRIMARY KEY,
     last_refresh TIMESTAMP,
@@ -126,6 +135,7 @@ CREATE TABLE IF NOT EXISTS property_alpha (
     flag_long_dom BOOLEAN, flag_price_cuts BOOLEAN,
     flag_motivated_language BOOLEAN, flag_assumable BOOLEAN,
     flag_oz BOOLEAN, flag_adu_eligible BOOLEAN,
+    flag_information_avm BOOLEAN,
     arv_estimate DOUBLE, rehab_estimate DOUBLE,
     max_70_rule_bid DOUBLE,
     alpha_stack INTEGER,

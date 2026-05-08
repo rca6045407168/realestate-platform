@@ -223,9 +223,18 @@ def derive_factors(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     # 5-yr CAGRs (ACS years are 2018→2023, so 5-yr basis assumed)
     yrs = 5
-    out["pop_cagr_5yr"] = (out["pop"] / out["pop_then"]) ** (1 / yrs) - 1
-    out["income_cagr_5yr"] = (out["hh_income"] / out["hh_income_then"]) ** (1 / yrs) - 1
-    out["emp_cagr_5yr"] = (out["emp_now"] / out["emp_then"]) ** (1 / yrs) - 1
+    # Use pre-clip safe ratio: drop pairs where the denominator is 0 or NaN
+    # so OMB boundary churn doesn't produce ±inf CAGRs.
+    def _cagr(now, then, years):
+        ratio = (now / then.where(then > 0))
+        return ratio.pow(1 / years) - 1
+    out["pop_cagr_5yr"]    = _cagr(out["pop"],       out["pop_then"],       yrs)
+    out["income_cagr_5yr"] = _cagr(out["hh_income"], out["hh_income_then"], yrs)
+    out["emp_cagr_5yr"]    = _cagr(out["emp_now"],   out["emp_then"],       yrs)
+    # Replace any residual ±inf with NaN (treats them as missing for z-scoring)
+    import numpy as np
+    for col in ("pop_cagr_5yr", "income_cagr_5yr", "emp_cagr_5yr"):
+        out[col] = out[col].replace([np.inf, -np.inf], np.nan)
     # Net migration as % of pop (using IRS exemptions ≈ persons)
     out["net_migration_pct_pop"] = (out["in_persons"] - out["out_persons"]) / out["pop"].clip(lower=1)
     # Supply

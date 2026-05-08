@@ -16,17 +16,10 @@ from the listing fields we do have, plus an ARV / 70%-rule estimate that is
 the canonical BRRRR underwriting heuristic.
 """
 from __future__ import annotations
-import re
 import duckdb
 import pandas as pd
 from .store import connect, upsert_df
-
-DISTRESS_TERMS = re.compile(
-    r"\b(as[- ]?is|cash only|investor|tlc|fixer|handyman|estate sale|probate|"
-    r"foreclosure|short sale|motivated seller|bring all offers|reduced|sold[- ]?as[- ]?is|"
-    r"needs work|opportunity|owner[- ]?relocating|move[- ]?in[- ]?ready)\b",
-    re.I,
-)
+from . import remarks as remarks_mod, avm as avm_mod
 
 
 def _arv_estimate(price: float, sqft: float, market_psf: float) -> float:
@@ -85,9 +78,22 @@ def compute(con: duckdb.DuckDBPyConnection | None = None) -> pd.DataFrame:
     listings["max_70_rule_bid"] = 0.70 * listings["arv_estimate"] - listings["rehab_estimate"]
 
     listings["flag_long_dom"] = listings["days_on_market"].fillna(0) > 60
-    listings["flag_price_cuts"] = False  # need price history; left as enhancement
-    # No MLS remarks in our schema — leave motivated_language flag as False
-    listings["flag_motivated_language"] = False
+    listings["flag_price_cuts"] = False  # needs price history (RESO `price_change_timestamp`)
+
+    # Free-text remarks (Redfin scrape doesn't ship them yet, but if a future
+    # listing carries `public_remarks` we run the regex parser to populate the
+    # behavioral / use-change / assumable flags from language alone).
+    if "public_remarks" in listings.columns:
+        sigs = listings["public_remarks"].apply(remarks_mod.parse)
+        listings["flag_motivated_language"] = sigs.apply(lambda s: s.motivated)
+        listings["flag_assumable"] = sigs.apply(lambda s: s.assumable)
+        # use-change from remarks promotes the existing state-level proxy
+        remarks_use_change = sigs.apply(lambda s: s.use_change)
+    else:
+        listings["flag_motivated_language"] = False
+        listings["flag_assumable"] = False
+        remarks_use_change = False
+
     # Fixer-upper flag = listed below ARV − rehab buffer
     listings["flag_fixer_upper"] = (
         listings["listed_price"] < (listings["arv_estimate"] - listings["rehab_estimate"]) * 0.80
@@ -97,14 +103,34 @@ def compute(con: duckdb.DuckDBPyConnection | None = None) -> pd.DataFrame:
         listings["flag_long_dom"]
         & (listings["listed_price"] < listings["arv_estimate"] * 0.85)
     ).fillna(False)
-    # Assumable / OZ / ADU flags require external data we don't have wired yet
-    listings["flag_assumable"] = False
+    # OZ overlay still TODO (paid)
     listings["flag_oz"] = False
-    listings["flag_adu_eligible"] = listings["state"].isin(["CA", "OR", "WA", "MN", "CO"])
+    listings["flag_adu_eligible"] = (
+        listings["state"].isin(["CA", "OR", "WA", "MN", "CO"]) | remarks_use_change
+    )
+
+    # AVM information-alpha overlay: tag listings sitting in 'cold' zips
+    # (Redfin sales clearing meaningfully below ZHVI) as buy candidates.
+    try:
+        avm = avm_mod.compute(con) if not own else None
+        if avm is None:
+            from .store import connect as _c
+            with _c() as _con2:
+                avm = avm_mod.compute(_con2)
+        if not avm.empty:
+            listings = listings.merge(
+                avm[["zip", "divergence_z", "direction"]], on="zip", how="left"
+            )
+            listings["flag_information_avm"] = listings["direction"].eq("cold")
+        else:
+            listings["flag_information_avm"] = False
+    except Exception:
+        listings["flag_information_avm"] = False
 
     flag_cols = [
         "flag_fixer_upper", "flag_distressed", "flag_long_dom", "flag_price_cuts",
         "flag_motivated_language", "flag_assumable", "flag_oz", "flag_adu_eligible",
+        "flag_information_avm",
     ]
     listings["alpha_stack"] = listings[flag_cols].astype(int).sum(axis=1)
 

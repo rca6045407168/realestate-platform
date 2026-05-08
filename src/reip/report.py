@@ -195,6 +195,21 @@ PAGE = """<!doctype html>
 <script>__JS__</script>
 <script>
 const MSAS = __DATA__;
+const HISTORY = __HISTORY__;
+function spark(values) {
+  if (!values || values.length < 2) return '';
+  const w = 60, h = 18, pad = 2;
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const span = hi - lo || 1;
+  const pts = values.map((v, i) => {
+    const x = pad + (i / (values.length - 1)) * (w - 2 * pad);
+    const y = pad + (1 - (v - lo) / span) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const last = values[values.length - 1], first = values[0];
+  const color = last >= first ? 'var(--green)' : 'var(--red)';
+  return `<svg width="${w}" height="${h}" style="vertical-align:middle"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
 function classToken(s) { return 'arch-' + (s||'').toLowerCase().replace(/[^a-z0-9]+/g, '-'); }
 function fmtPct(x, d=2) { return (x===null||x===undefined||isNaN(x)) ? '—' : (x*100).toFixed(d) + '%'; }
 function fmtNum(x, d=0) { return (x===null||x===undefined||isNaN(x)) ? '—' : x.toLocaleString(undefined, {maximumFractionDigits: d}); }
@@ -211,7 +226,7 @@ function renderTable() {
   let rows = MSAS.filter(r => (arch==='' || r.archetype===arch) && r.pop >= minpop);
   rows.sort((a, b) => (b[sortby]||-99) - (a[sortby]||-99));
   rows = rows.slice(0, n);
-  let html = '<table><thead><tr><th>CBSA</th><th>MSA</th><th>Archetype</th><th class="num">Pop</th><th class="num">PopΔ5y</th><th class="num">Mig%</th><th class="num">Yield</th><th class="num">Permits/1k</th><th class="num">Appr</th><th class="num">Cash</th><th class="num">Total</th><th>Cmp</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>CBSA</th><th>MSA</th><th>Archetype</th><th class="num">Pop</th><th class="num">PopΔ5y</th><th class="num">Mig%</th><th class="num">Yield</th><th class="num">Permits/1k</th><th>ZHVI 12m</th><th class="num">Appr</th><th class="num">Cash</th><th class="num">Total</th><th>Cmp</th></tr></thead><tbody>';
   for (const r of rows) {
     html += `<tr>
       <td>${r.cbsa_code}</td>
@@ -222,6 +237,7 @@ function renderTable() {
       <td class="num">${fmtPct(r.net_migration_pct_pop)}</td>
       <td class="num">${fmtPct(r.gross_yield)}</td>
       <td class="num">${fmtNum(r.permits_per_1000_hh, 1)}</td>
+      <td>${spark(HISTORY[r.cbsa_code])}</td>
       <td class="num">${score(r.appreciation_score)}</td>
       <td class="num">${score(r.cashflow_score)}</td>
       <td class="num">${score(r.total_return_score)}</td>
@@ -283,7 +299,36 @@ recalc();
 </html>"""
 
 
-def build(scored: pd.DataFrame, out_path: Path | str = "data/reip-report.html") -> Path:
+ZHVI_HISTORY_SQL = """
+WITH zip_to_cbsa AS (
+    SELECT z.zip, c.cbsa_code
+    FROM zip_county_xwalk z JOIN county_cbsa_xwalk c USING (fips_county)
+),
+zhvi_recent AS (
+    SELECT zip, period, value
+    FROM zillow_zhvi
+    WHERE period >= (CURRENT_DATE - INTERVAL '13 months')
+)
+SELECT zc.cbsa_code, zr.period, MEDIAN(zr.value) AS zhvi_med
+FROM zhvi_recent zr JOIN zip_to_cbsa zc USING (zip)
+GROUP BY zc.cbsa_code, zr.period
+ORDER BY zc.cbsa_code, zr.period
+"""
+
+
+def _zhvi_history(con) -> dict[str, list[float]]:
+    if con is None:
+        return {}
+    rows = con.execute(ZHVI_HISTORY_SQL).fetchall()
+    history: dict[str, list[float]] = {}
+    for cbsa_code, _period, val in rows:
+        history.setdefault(cbsa_code, []).append(float(val) if val is not None else None)
+    # Keep only the trailing 12 points so the JSON payload stays small
+    return {k: v[-12:] for k, v in history.items() if len(v) >= 6}
+
+
+def build(scored: pd.DataFrame, out_path: Path | str = "data/reip-report.html",
+          con=None) -> Path:
     """Generate a single-file HTML report."""
     cols = [
         "cbsa_code", "cbsa_name", "archetype", "pop", "pop_cagr_5yr",
@@ -292,10 +337,12 @@ def build(scored: pd.DataFrame, out_path: Path | str = "data/reip-report.html") 
         "completeness",
     ]
     have = scored[[c for c in cols if c in scored.columns]].copy()
+    history = _zhvi_history(con)
     # JSON-friendly: replace NaN with None
     data = json.loads(have.to_json(orient="records"))
     page = (
         PAGE.replace("__DATA__", json.dumps(data))
+            .replace("__HISTORY__", json.dumps(history))
             .replace("__JS__", UNDERWRITING_JS)
             .replace("__NMSA__", str(len(have)))
             .replace("__TIMESTAMP__", html.escape(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")))

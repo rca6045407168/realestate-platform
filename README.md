@@ -112,11 +112,12 @@ The eight durable sources of alpha. Computed per listing in `redfin_listings`:
 | `flag_fixer_upper` | listed price < (ARV − rehab) × 0.80 |
 | `flag_distressed`  | long DOM + below comp psf |
 | `flag_long_dom`    | DOM > 60d |
-| `flag_price_cuts`  | requires price history (TODO) |
-| `flag_motivated_language` | requires MLS remarks (TODO) |
-| `flag_assumable`   | requires loan recordings (paid: ATTOM) |
-| `flag_oz`          | Opportunity Zone overlay (TODO) |
-| `flag_adu_eligible` | state-level proxy (CA/OR/WA/MN/CO) |
+| `flag_motivated_language` | regex parser on `public_remarks` (`reip remarks`) |
+| `flag_assumable`   | regex parser on `public_remarks` (FHA/VA/USDA assumable) |
+| `flag_information_avm` | zip in 'cold' AVM band (Redfin sales ≤ −1σ vs ZHVI) |
+| `flag_adu_eligible` | state-level proxy (CA/OR/WA/MN/CO) + `public_remarks` use-change parse |
+| `flag_price_cuts`  | requires RESO `price_change_timestamp` (TODO) |
+| `flag_oz`          | Opportunity Zone tract overlay (TODO) |
 
 Plus `arv_estimate`, `rehab_estimate`, `max_70_rule_bid`, and an
 `alpha_stack` count (deals stacking 2–3+ sources are the framework's prized
@@ -155,7 +156,9 @@ features. Sample top-rated zips on a 2026-05 ingest:
 | `reip freshness` | Per-source data age + cadence-aware stale flag | Token counter |
 | `reip refresh` | Only re-pulls sources past their cadence | LiteLLM router |
 | `reip backtest` | Golden-ranking regression test (Memphis is always Cashflow Heartland, Austin is always appreciation > cashflow) | Promptfoo |
-| `reip report` | Self-contained HTML w/ sortable MSA table + JS underwriting calculator (no server) | Pyodide |
+| `reip report` | Self-contained HTML w/ sortable MSA table, JS underwriting calculator, and per-MSA ZHVI sparklines (no server) | Pyodide |
+| `reip avm` | Zip-level AVM mispricing signal — hot/cold zips where Redfin sales diverge from ZHVI smoothed index | Information alpha (§5.7) |
+| `reip remarks` | Free-text MLS-remarks parser — motivated, distressed, use-change, assumable, price-cut, short-sale, probate flags | Behavioral alpha (§5.8) |
 
 ## CLI
 
@@ -184,6 +187,11 @@ reip diff --by cashflow
 # Property-level
 reip alpha                                           # 8-flag overlay on listings
 reip underwrite --price 70000 --rehab 25000 --arv 130000 --rent 1200 --sensitivity
+
+# Information / Behavioral alpha
+reip avm --direction cold --top 20                   # zips selling below ZHVI = buy candidates
+reip avm --direction hot  --top 20                   # zips selling above ZHVI = momentum
+reip remarks "motivated seller, sold as-is, 3.25% assumable VA"
 
 # Quality gate + interactive report
 reip backtest                                        # 8-MSA golden ranking test
