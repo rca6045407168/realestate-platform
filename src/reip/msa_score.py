@@ -323,7 +323,11 @@ def classify_archetype(row: pd.Series) -> str:
         return "Resource & Niche"
     if yld <= 4 and pop_cagr <= 1.5:
         return "Coastal Gateway"
-    if yld >= 7 and pop_cagr <= 0.5:
+    # Cap rate floor relaxed to 6% — Saiz (2010) and ZHVI/ZORI puts canonical
+    # CH metros (Cleveland, Pittsburgh, Detroit) in the 6-9% gross-yield band
+    # rather than the framework's 7-10% cap-rate band. Cap and gross yield
+    # are not identical (cap is on NOI, gross on rent).
+    if yld >= 6 and pop_cagr <= 0.5:
         return "Cashflow Heartland"
     if 5 <= yld <= 7 and pop_cagr >= 1.5:
         return "Sun Belt Growth"

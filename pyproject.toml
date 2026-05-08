@@ -12,6 +12,9 @@ dependencies = [
     "tqdm>=4.66",
     "python-dotenv>=1.0",
     "tenacity>=8.2",
+    "rich>=13.0",
+    "openpyxl>=3.1",
+    "python-docx>=1.0",
 ]
 
 [project.scripts]

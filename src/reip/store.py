@@ -74,6 +74,20 @@ CREATE TABLE IF NOT EXISTS zip_county_xwalk (
     zip VARCHAR, fips_county VARCHAR, weight DOUBLE,
     PRIMARY KEY (zip, fips_county)
 );
+CREATE TABLE IF NOT EXISTS source_freshness (
+    source_name VARCHAR PRIMARY KEY,
+    last_refresh TIMESTAMP,
+    rows_loaded INTEGER,
+    expected_cadence_days INTEGER
+);
+CREATE TABLE IF NOT EXISTS msa_rank_snapshots (
+    snapshot_at TIMESTAMP, cbsa_code VARCHAR,
+    cbsa_name VARCHAR, archetype VARCHAR,
+    appreciation_score DOUBLE, cashflow_score DOUBLE,
+    total_return_score DOUBLE, total_rank INTEGER,
+    appreciation_rank INTEGER, cashflow_rank INTEGER,
+    PRIMARY KEY (snapshot_at, cbsa_code)
+);
 CREATE TABLE IF NOT EXISTS county_cbsa_xwalk (
     fips_county VARCHAR PRIMARY KEY,
     cbsa_code VARCHAR, cbsa_name VARCHAR, cbsa_type VARCHAR,

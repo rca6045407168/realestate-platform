@@ -146,12 +146,26 @@ features. Sample top-rated zips on a 2026-05 ingest:
 | 63133 | St. Louis, MO | $79k | 6.0% | 19.2% | 40 | $9.6M | 2.45 |
 | 14611 | Rochester, NY | $116k | 6.2% | 14.9% | 13 | $30M | 2.32 |
 
+## Operator-quality features
+
+| Feature | What it gives you | Inspired by |
+|---|---|---|
+| Rich CLI tables | Color-coded archetype, +/- score tinting, completeness bars | Shiki |
+| `reip diff` | Largest movers vs. previous snapshot — alpha lives in regime changes | Diff viewer |
+| `reip freshness` | Per-source data age + cadence-aware stale flag | Token counter |
+| `reip refresh` | Only re-pulls sources past their cadence | LiteLLM router |
+| `reip backtest` | Golden-ranking regression test (Memphis is always Cashflow Heartland, Austin is always appreciation > cashflow) | Promptfoo |
+| `reip report` | Self-contained HTML w/ sortable MSA table + JS underwriting calculator (no server) | Pyodide |
+
 ## CLI
 
 ```bash
 reip init                                            # create schema
-reip ingest                                          # all sources
+reip ingest                                          # all sources, unconditional
 reip ingest --only zillow --only redfin              # subset
+reip refresh                                         # smart: only stale sources
+reip refresh --dry-run                               # show what's stale, don't pull
+reip freshness                                       # per-source data-age table
 reip status                                          # row counts
 
 # MSA-level (framework Table 5)
@@ -162,9 +176,18 @@ reip msa-rank --archetype "Sun Belt Growth"          # filter by archetype
 reip msa-rank --blend 0.7 --top 10                   # 70/30 weighting toward appreciation
 reip archetype Memphis                               # one-MSA factor breakdown
 
+# Diff vs. previous snapshot (auto-written by every msa-rank run)
+reip diff --by total --top 20
+reip diff --by appreciation
+reip diff --by cashflow
+
 # Property-level
 reip alpha                                           # 8-flag overlay on listings
 reip underwrite --price 70000 --rehab 25000 --arv 130000 --rent 1200 --sensitivity
+
+# Quality gate + interactive report
+reip backtest                                        # 8-MSA golden ranking test
+reip report --out data/reip-report.html              # self-contained HTML, opens from disk
 
 # Legacy zip-level (pikachu compatibility)
 reip top --top 25 --min-completeness 0.85

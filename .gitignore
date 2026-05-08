@@ -7,6 +7,8 @@ data/reip.duckdb
 data/reip.duckdb.wal
 *.csv
 *.parquet
+*.html
+data/reip-report.html
 .pytest_cache/
 .ipynb_checkpoints/
 dist/

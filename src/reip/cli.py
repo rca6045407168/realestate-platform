@@ -1,22 +1,27 @@
 """reip CLI.
 
 Commands:
-    reip init
-    reip ingest
-    reip status
+    reip init / ingest / status / refresh / freshness
     reip top                   — zip-level legacy ranking
     reip msa-rank              — Appreciation × Cashflow × Total per Table 5
+    reip diff                  — movers vs. previous snapshot
     reip archetype <CBSA>      — classify into 5 archetypes
     reip alpha                 — property-level alpha overlay
     reip underwrite <args>     — pro forma + DSCR + IRR + sensitivity
+    reip backtest              — golden-ranking regression test
+    reip report                — self-contained HTML report
 """
 from __future__ import annotations
 import json
 import sys
+from datetime import datetime
 import click
 import pandas as pd
 from .store import connect, init as store_init
-from . import score as score_zip, msa_score, alpha as alpha_mod, underwriting
+from . import (
+    score as score_zip, msa_score, alpha as alpha_mod, underwriting,
+    snapshots, freshness as fresh_mod, backtest as backtest_mod, report as report_mod, render,
+)
 from .loaders import (
     zillow,
     redfin as redfin_market,
@@ -67,6 +72,7 @@ def init():
 @click.option("--skip", multiple=True)
 @click.option("--refresh", is_flag=True)
 def ingest(only, skip, refresh):
+    """Pull configured sources unconditionally."""
     con = connect(); store_init(con)
     targets = [s for s in SOURCES if (not only or s in only) and s not in skip]
     for name in targets:
@@ -77,9 +83,49 @@ def ingest(only, skip, refresh):
             if "refresh" in mod.load.__code__.co_varnames:
                 kwargs["refresh"] = refresh
             n = mod.load(con, **kwargs)
+            fresh_mod.stamp(con, name, n)
             click.echo(f" {n} rows")
         except Exception as e:
             click.echo(f" FAILED: {e}")
+
+
+@cli.command()
+@click.option("--dry-run", is_flag=True, help="Show which sources are stale without re-pulling")
+def refresh(dry_run):
+    """Smart refresh — only re-pull sources past their cadence.
+
+    Cadence per source defined in freshness.py: weekly (Redfin), monthly
+    (Zillow, permits), quarterly (BLS, FHFA), annual (IRS, ACS, HUD).
+    """
+    con = connect(); store_init(con)
+    stale = fresh_mod.stale_sources(con)
+    if not stale:
+        click.echo("All sources fresh. Nothing to do.")
+        return
+    click.echo(f"Stale sources: {', '.join(stale)}")
+    if dry_run:
+        return
+    for name in stale:
+        if name not in SOURCES:
+            continue
+        mod = SOURCES[name]
+        click.echo(f"→ refreshing {name} …", nl=False)
+        try:
+            kwargs = {}
+            if "refresh" in mod.load.__code__.co_varnames:
+                kwargs["refresh"] = True
+            n = mod.load(con, **kwargs)
+            fresh_mod.stamp(con, name, n)
+            click.echo(f" {n} rows")
+        except Exception as e:
+            click.echo(f" FAILED: {e}")
+
+
+@cli.command()
+def freshness():
+    """Show per-source freshness with cadence-aware staleness flags."""
+    con = connect(); store_init(con)
+    render.freshness_table(fresh_mod.status(con))
 
 
 @cli.command()
@@ -123,19 +169,21 @@ def top(n, out, w_yield, w_growth, w_risk, min_completeness):
 
 
 @cli.command("msa-rank")
-@click.option("--top", "n", default=30)
+@click.option("--top", "n", default=25)
 @click.option("--blend", default=0.5, help="Weight on Appreciation in Total Return (default 0.5)")
 @click.option("--archetype", default=None, help="Filter to one archetype")
 @click.option("--out", type=click.Path(), default=None)
 @click.option("--by", type=click.Choice(["total", "appreciation", "cashflow"]), default="total")
-def msa_rank(n, blend, archetype, out, by):
+@click.option("--no-snapshot", is_flag=True, help="Don't write a ranking snapshot")
+def msa_rank(n, blend, archetype, out, by, no_snapshot):
     """Rank MSAs per the framework's Table 5 weights."""
     con = connect()
     raw = msa_score.features(con)
     if raw.empty:
         click.echo("No MSA features — run `reip ingest` first."); sys.exit(1)
-    scored = msa_score.score(raw, blend_w_appr=blend)
-    scored = msa_score.with_archetype(scored)
+    scored = msa_score.with_archetype(msa_score.score(raw, blend_w_appr=blend))
+    if not no_snapshot:
+        snapshots.snapshot(con, scored)
     if archetype:
         scored = scored[scored["archetype"] == archetype]
     sort_col = {"total": "total_return_score", "appreciation": "appreciation_score",
@@ -143,14 +191,55 @@ def msa_rank(n, blend, archetype, out, by):
     scored = scored.sort_values(sort_col, ascending=False)
     if out:
         scored.to_csv(out, index=False)
-    cols = [
-        "cbsa_code", "cbsa_name", "archetype", "pop", "pop_cagr_5yr",
-        "emp_cagr_5yr", "net_migration_pct_pop", "permits_per_1000_hh",
-        "gross_yield", "elasticity", "wrluri",
-        "appreciation_score", "cashflow_score", "total_return_score", "completeness",
-    ]
-    click.echo(scored[[c for c in cols if c in scored.columns]].head(n).to_string(
-        index=False, float_format=lambda x: f"{x:,.4f}"))
+    title = f"MSA ranking (sort={by}, blend appr={blend})"
+    if archetype:
+        title += f" — {archetype} only"
+    render.msa_table(scored.head(n), title=title)
+
+
+@cli.command()
+@click.option("--by", type=click.Choice(["total", "appreciation", "cashflow"]), default="total")
+@click.option("--top", "n", default=20, help="Top N movers to show")
+def diff(by, n):
+    """Compare the latest MSA ranking to the previous snapshot.
+
+    Shows the largest movers — regime changes are where alpha hides.
+    Run `reip msa-rank` two or more times to populate snapshots.
+    """
+    con = connect()
+    df = snapshots.diff(con, by=by, top_movers=n)
+    if df.empty:
+        click.echo("Need at least two snapshots — run `reip msa-rank` again later.")
+        return
+    render.diff_table(df, title=f"Top {n} movers ({by} score)")
+
+
+@cli.command()
+def backtest():
+    """Run the golden-ranking regression test on the scorer."""
+    con = connect()
+    out = backtest_mod.run(con)
+    if out["failed"] == 0:
+        click.echo(f"backtest: {out['passed']}/{out['passed']} passed")
+    else:
+        click.echo(f"backtest: {out['passed']} passed, {out['failed']} FAILED")
+        for f in out["failures"]:
+            click.echo(f"  ✗ {f.get('msa')}: {f.get('reason')}")
+        sys.exit(1)
+
+
+@cli.command()
+@click.option("--out", type=click.Path(), default="data/reip-report.html")
+@click.option("--blend", default=0.5)
+def report(out, blend):
+    """Build a self-contained HTML report (interactive table + JS underwriting calculator)."""
+    con = connect()
+    raw = msa_score.features(con)
+    if raw.empty:
+        click.echo("No MSA features — run `reip ingest` first."); sys.exit(1)
+    scored = msa_score.with_archetype(msa_score.score(raw, blend_w_appr=blend))
+    p = report_mod.build(scored, out)
+    click.echo(f"Wrote {p}  (open in your browser; no server needed)")
 
 
 @cli.command()
