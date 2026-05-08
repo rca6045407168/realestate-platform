@@ -285,7 +285,7 @@ def listings_buy(
     min_school_count: Optional[int] = Query(None, description="Minimum public schools serving the zip"),
     mortgage_rate: float = 0.07,
     ltv: float = 0.75,
-    sort: str = Query("total_return", pattern="^(total_return|cashflow|appreciation|irr)$"),
+    sort: str = Query("irr", pattern="^(total_return|cashflow|appreciation|irr)$"),
 ):
     """Live buyable listings for a launch market, ranked by 5-year return.
 
