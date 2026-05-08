@@ -118,6 +118,10 @@ CREATE TABLE IF NOT EXISTS acs_county (
     population DOUBLE, households DOUBLE,
     median_household_income DOUBLE,
     median_home_value DOUBLE, median_gross_rent DOUBLE,
+    -- Vacancy components for ACS-derived rental vacancy rate.
+    -- rental_vacancy = vacant_for_rent / (vacant_for_rent + renter_occupied)
+    vacant_for_rent  DOUBLE, vacant_for_sale DOUBLE,
+    owner_occupied   DOUBLE, renter_occupied DOUBLE,
     PRIMARY KEY (fips_county, year)
 );
 CREATE TABLE IF NOT EXISTS fhfa_hpi_metro (

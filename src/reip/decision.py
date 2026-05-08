@@ -97,7 +97,23 @@ def build(
             f"5y projected total return {_money(five_y_dollars)} ({_pct(five_y_pct, 0)} on equity)."
         )
 
-    # 2. Cashflow story
+    # 2. Vacancy framing — directly impacts the rental projection
+    if getattr(p, "vacancy_used", None) is not None and getattr(p, "vacancy_source", "") != "default-5pct":
+        v = p.vacancy_used * 100
+        if v >= 12:
+            reasons.append(
+                f"Local rental vacancy is {v:.1f}% (ACS) — high. The 5y rental profit "
+                f"projection bakes that in; underwriting at 5% vacancy would inflate it."
+            )
+        elif v <= 5:
+            reasons.append(
+                f"Local rental vacancy is just {v:.1f}% (ACS) — tight rental market, "
+                f"a tailwind for sustained occupancy."
+            )
+        else:
+            reasons.append(f"Local rental vacancy is {v:.1f}% (ACS, county-derived).")
+
+    # 3. Cashflow story
     if p.dscr_y1 >= 1.30:
         reasons.append(
             f"Cash flow is healthy: DSCR {p.dscr_y1:.2f}×, cash-on-cash {_pct(p.cash_on_cash_y1, 1)} "

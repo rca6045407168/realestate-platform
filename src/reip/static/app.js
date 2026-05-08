@@ -368,7 +368,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ---- Buy ideas screen ----------------------------------------------------
 
+let MARKETS_LOADED = false;
+async function loadMarkets() {
+  if (MARKETS_LOADED) return;
+  let markets;
+  try {
+    markets = await api('/listings/markets');
+  } catch (e) {
+    return;
+  }
+  // Group by archetype hint, alphabetize within group, render
+  const groups = {};
+  for (const m of markets) {
+    const k = m.archetype_hint || 'Other';
+    (groups[k] = groups[k] || []).push(m);
+  }
+  const order = ['Coastal Gateway', 'Sun Belt Growth', 'Cashflow Heartland',
+                 'Boom-Bust Beta', 'Resource & Niche', 'Mixed', 'Other'];
+  const sel = $('buyCbsa');
+  sel.innerHTML = '';
+  for (const archetype of order) {
+    const group = groups[archetype];
+    if (!group) continue;
+    group.sort((a, b) => a.name.localeCompare(b.name));
+    const og = document.createElement('optgroup');
+    og.label = archetype;
+    for (const m of group) {
+      const o = document.createElement('option');
+      o.value = m.cbsa_code;
+      o.textContent = m.name;
+      og.appendChild(o);
+    }
+    sel.appendChild(og);
+  }
+  // Default to Memphis if present, else first
+  sel.value = '32820';
+  if (sel.value !== '32820') sel.selectedIndex = 0;
+  MARKETS_LOADED = true;
+}
+
 async function loadBuy() {
+  await loadMarkets();
   const params = new URLSearchParams({
     cbsa: $('buyCbsa').value,
     sort: $('buySort').value,
@@ -453,10 +493,11 @@ function renderBuyCard(r) {
       </div>
     </div>
 
-    <div class="px-4 mt-2 text-xs flex items-center gap-2 text-muted">
+    <div class="px-4 mt-2 text-xs flex items-center gap-2 text-muted flex-wrap">
       <span>cap ${fmtPct(p.cap_rate_y1, 1)}</span>·
       <span>DSCR ${p.dscr_y1.toFixed(2)}×</span>·
-      <span>CoC ${fmtPct(p.cash_on_cash_y1, 1)}</span>
+      <span>CoC ${fmtPct(p.cash_on_cash_y1, 1)}</span>·
+      <span title="Vacancy source: ${p.vacancy_source || 'unknown'}">vac ${fmtPct(p.vacancy_used, 1)}${p.vacancy_source && p.vacancy_source.startsWith('acs') ? ' · ACS' : p.vacancy_source === 'default-5pct' ? ' · default' : ''}</span>
       <span class="ml-auto">${avmTag}</span>
     </div>
 

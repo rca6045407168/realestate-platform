@@ -37,6 +37,8 @@ class Projection:
     cash_on_cash_y1: float
     dscr_y1: float
     cap_rate_y1: float
+    vacancy_used: float          # the actual vacancy rate the projection used
+    vacancy_source: str          # 'acs:zip-county' | 'default-5pct' | 'override'
     sources: list[str]
 
 
@@ -97,6 +99,36 @@ def _zori_now(con, zip_code: str) -> Optional[float]:
     return float(row[0]) if row else None
 
 
+def _rental_vacancy_for_zip(con, zip_code: str) -> Optional[float]:
+    """ACS-derived rental vacancy rate for the zip's county. The HVS
+    formula: vacant_for_rent / (vacant_for_rent + renter_occupied).
+    Returns None if the underlying ACS columns are missing or zero.
+    """
+    if not zip_code:
+        return None
+    row = con.execute(
+        """SELECT a.vacant_for_rent, a.renter_occupied
+           FROM zip_county_xwalk z
+           JOIN acs_county a ON a.fips_county = z.fips_county
+           WHERE z.zip = ? AND a.year = (SELECT MAX(year) FROM acs_county)
+           ORDER BY a.year DESC LIMIT 1""",
+        [str(zip_code).zfill(5)],
+    ).fetchone()
+    if not row:
+        return None
+    vacant, renter = row
+    if vacant is None or renter is None:
+        return None
+    denom = float(vacant) + float(renter)
+    if denom <= 0:
+        return None
+    pct = float(vacant) / denom
+    # Clamp implausible values — ACS noise on small zips can put rentals at
+    # 0 or 100% vacancy. Cap at 30% (catastrophic but real for some markets)
+    # and floor at 2% (the structural friction floor).
+    return max(0.02, min(0.30, pct))
+
+
 def _msa_appreciation_overlay(archetype: Optional[str]) -> float:
     """Multiplier on the zip's trailing appreciation CAGR based on the
     MSA archetype. Cashflow Heartland markets are mean-reverting; Sun Belt
@@ -118,7 +150,7 @@ def project(
     archetype: Optional[str] = None,
     mortgage_rate: float = 0.07,
     ltv: float = 0.75,
-    vacancy: float = 0.05,
+    vacancy: Optional[float] = None,
     opex_ratio: float = 0.40,
     property_tax_rate: float = 0.012,
     insurance_annual: float = 1500.0,
@@ -130,6 +162,24 @@ def project(
     sources: list[str] = []
     price = float(listing["listed_price"])
     zip_code = listing.get("zip")
+
+    # Vacancy: prefer the ACS-derived rental vacancy for the zip's county.
+    # Fall back to a 5% default. Caller can pass `vacancy` to force an
+    # override (e.g. to model the user's local PM's actual experience).
+    if vacancy is not None:
+        vacancy_used = vacancy
+        vacancy_source = "override"
+    else:
+        acs_vac = _rental_vacancy_for_zip(con, zip_code)
+        if acs_vac is not None:
+            vacancy_used = acs_vac
+            vacancy_source = "acs:zip-county"
+            sources.append(f"vacancy: ACS rental vacancy {acs_vac*100:.1f}% (zip→county)")
+        else:
+            vacancy_used = 0.05
+            vacancy_source = "default-5pct"
+            sources.append("vacancy: default 5% (no ACS coverage for this zip)")
+    vacancy = vacancy_used
 
     # Rent: prefer ZORI for the zip; if missing, estimate at 0.8% of value
     # (the classic 1% rule, conservatively haircut). Real Mid-West yields
@@ -241,5 +291,7 @@ def project(
         cash_on_cash_y1=pf["cash_on_cash"],
         dscr_y1=pf["dscr"],
         cap_rate_y1=pf["cap_rate"],
+        vacancy_used=round(vacancy_used, 4),
+        vacancy_source=vacancy_source,
         sources=sources,
     )

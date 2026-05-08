@@ -50,7 +50,7 @@ def test_listings_search_parses_envelope(monkeypatch):
     assert L.address == "123 Test St"
     assert L.zip == "38127"
     assert L.listed_price == 95000
-    assert L.cbsa_name == "Memphis"
+    assert "Memphis" in L.cbsa_name
     assert L.days_on_market == 12
 
 
@@ -120,6 +120,7 @@ def test_decision_text_includes_archetype_and_5y_dollars():
         rental_profit_5y=20_000, equity_paydown_5y=5_000,
         total_return_5y_dollars=40_000, total_return_5y_pct=1.0,
         irr_5y=0.18, cash_on_cash_y1=0.10, dscr_y1=1.45, cap_rate_y1=0.085,
+        vacancy_used=0.078, vacancy_source="acs:zip-county",
         sources=["ZORI:zip"],
     )
     listing = {"cbsa_name": "Memphis", "listed_price": 95_000}
@@ -146,6 +147,7 @@ def test_decision_red_verdict_says_pass():
         rental_profit_5y=-500, equity_paydown_5y=5_000,
         total_return_5y_dollars=19_500, total_return_5y_pct=0.5,
         irr_5y=0.04, cash_on_cash_y1=-0.02, dscr_y1=0.94, cap_rate_y1=0.05,
+        vacancy_used=0.05, vacancy_source="default-5pct",
         sources=["ZORI:zip"],
     )
     d = decision.build(

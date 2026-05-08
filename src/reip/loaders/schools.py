@@ -34,8 +34,15 @@ BASE = "https://educationdata.urban.org/api/v1/schools/ccd/directory"
 DEFAULT_YEAR = 2022
 
 
-# Six launch markets to default to (matches listings_search.MARKETS).
-DEFAULT_CBSAS = ("32820", "26900", "28140", "13820", "17460", "38300")
+def _default_cbsas() -> tuple[str, ...]:
+    """Pull the full MARKETS list from listings_search so the schools
+    overlay covers every CBSA the screener can search."""
+    try:
+        from .. import listings_search
+        return tuple(listings_search.MARKETS.keys())
+    except Exception:
+        # Fallback: original 6 launch markets
+        return ("32820", "26900", "28140", "13820", "17460", "38300")
 
 
 def _state_url(year: int, fips_state: str) -> str:
@@ -113,10 +120,12 @@ def _aggregate(records: list[dict]) -> pd.DataFrame:
 
 def load(
     con: duckdb.DuckDBPyConnection,
-    cbsas: tuple[str, ...] | list[str] = DEFAULT_CBSAS,
+    cbsas: tuple[str, ...] | list[str] | None = None,
     year: int = DEFAULT_YEAR,
     refresh: bool = False,
 ) -> int:
+    if cbsas is None:
+        cbsas = _default_cbsas()
     """Pull schools for every county in the listed CBSAs and aggregate to zip."""
     counties = con.execute(
         "SELECT DISTINCT fips_county FROM county_cbsa_xwalk WHERE cbsa_code IN ("

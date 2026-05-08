@@ -24,6 +24,11 @@ VARS = {
     "B19013_001E": "median_household_income",
     "B25077_001E": "median_home_value",
     "B25064_001E": "median_gross_rent",
+    # Vacancy components (B25004 = vacancy status; B25003 = tenure)
+    "B25004_002E": "vacant_for_rent",
+    "B25004_004E": "vacant_for_sale",
+    "B25003_002E": "owner_occupied",
+    "B25003_003E": "renter_occupied",
 }
 
 
