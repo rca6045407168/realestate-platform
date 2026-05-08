@@ -1,14 +1,24 @@
 # reip — Real Estate Investment Platform
 
-Pulls free public real estate datasets into a single DuckDB store, then ranks
-US zip codes on a yield × growth × risk composite. Spiritual successor to
-[`project_pikachu`](https://github.com/rca241231/project_pikachu) (2019,
-Redfin + AirDNA + BLS) and [`project_raichu`](https://github.com/rca241231/project_raichu).
+End-to-end implementation of *Allocating Capital Across U.S. Real Estate: A
+Framework for Appreciation, Cashflow, and Total Return* (working paper, May
+2026). Pulls free public real estate datasets into a single DuckDB store,
+ranks MSAs on the framework's two-axis Appreciation × Cashflow scoring
+model, classifies each MSA into one of five archetypes, overlays the eight
+sources of property-level alpha, and underwrites individual properties
+with pro forma + DSCR + IRR + sensitivity.
+
+Spiritual successor to [`project_pikachu`](https://github.com/rca241231/project_pikachu)
+(2019, Redfin + AirDNA + BLS) and [`project_raichu`](https://github.com/rca241231/project_raichu).
 
 What's new vs. pikachu:
-- 7+ datasets instead of 3, with weekly/monthly history not just snapshots
+- 14+ datasets instead of 3 — Zillow, Redfin, FHFA, ACS, IRS, BPS, BLS, FEMA, FRED, Saiz, Wharton
+- MSA-level scoring (not zip), per the framework's Table 5 weights
+- Two-axis output: Appreciation Score + Cashflow Score + blended Total Return
+- Five archetype classifier: Coastal Gateway / Sun Belt Growth / Cashflow Heartland / Boom-Bust Beta / Resource & Niche
+- Property-level alpha overlay: 8 flags + ARV / 70%-rule / BRRRR refinance
+- Underwriting workspace: pro forma, DSCR, 5-yr IRR, equity multiple, sensitivity table
 - DuckDB store (one file, fast analytics) instead of CSV append
-- Composite score with completeness audit per zip
 - Resilient ingest: per-source caching, partial failure tolerated
 
 ## Quick start
@@ -53,21 +63,75 @@ FRED_API_KEY=         # https://fred.stlouisfed.org/docs/api/api_key.html
 CENSUS_API_KEY=       # https://api.census.gov/data/key_signup.html
 ```
 
-## Score
+## MSA scoring model (Framework Table 5)
+
+Two scores per CBSA. Per the framework: NO trailing price appreciation
+appears as a feature — only leading indicators. Weights:
+
+| Group | Component | Weight | Source |
+|---|---|---|---|
+| Demand 40% | 5-yr population CAGR | 10% | Census ACS |
+|  | 5-yr employment CAGR | 10% | BLS QCEW |
+|  | 5-yr median household income CAGR | 10% | Census ACS |
+|  | Net domestic migration % of pop | 10% | IRS migration |
+| Supply 20% | Permits per 1,000 households (3y) | 10% | Census BPS |
+|  | Months of inventory | 5% | Redfin |
+|  | Saiz supply elasticity | 5% | Saiz (2010) / Wharton |
+| Pricing 20% | Gross rent yield | 10% | ZORI / ZHVI |
+|  | Price-to-income (inverted) | 5% | ZHVI / ACS income |
+|  | 12-mo DOM trend (inverted) | 5% | Redfin |
+| Risk 20% | Climate / flood claims | 5% | FEMA NFIP |
+|  | Insurance trend proxy | 5% | FEMA paid trend |
+|  | Regulatory friction (WRLURI) | 5% | Wharton 2018 |
+|  | Effective property tax rate | 5% | Tax Foundation |
 
 ```
-score = w_yield × z(yield) + w_growth × z(growth) − w_risk × z(risk)
+appreciation_score = Σ(demand+supply weights × z(factor)) − 0.5 × risk
+cashflow_score     = Σ(yield weights × z(factor)) − 0.5 × risk
+total_return       = blend × appreciation_score + (1−blend) × cashflow_score
 ```
 
-- **yield** = `ZORI × 12 / ZHVI` (gross), capped at 20% to drop vacation-rental noise; HUD FMR 2BR fallback
-- **growth** = `z(YoY ZHVI appreciation)` + `z(net IRS AGI inflow)` − `z(permits 12mo)` *(oversupply penalty)*
-- **risk** = `z(FEMA NFIP claims)` + `z(median DOM)` − `z(sale-to-list)` *(seller power lowers risk)*
+Robust z = (x − median) / IQR so a few mega-MSAs don't dominate.
 
-All sub-scores use **robust z** ((x − median) / IQR) so a few mega-counties
-don't dominate. Dollar-denominated quantities are log-transformed first.
+## Archetype classifier (Framework §4)
 
-`completeness` (0–1) reports the fraction of the seven input signals present
-per zip, so you can filter to high-confidence picks (`--min-completeness 0.85`).
+Each MSA classified by yield, growth, and named-market heuristics:
+
+- **Coastal Gateway** — yield ≤ 4%, low growth, supply-inelastic
+- **Sun Belt Growth** — yield 5–7%, pop CAGR ≥ 1.5%
+- **Cashflow Heartland** — yield ≥ 7%, pop CAGR ≤ 0.5%
+- **Boom-Bust Beta** — Las Vegas, Phoenix, Riverside, Cape Coral, Reno
+- **Resource & Niche** — small / lifestyle / energy / college / STR-heavy
+
+## Property-level alpha overlay (Framework §5)
+
+The eight durable sources of alpha. Computed per listing in `redfin_listings`:
+
+| Flag | Source |
+|---|---|
+| `flag_fixer_upper` | listed price < (ARV − rehab) × 0.80 |
+| `flag_distressed`  | long DOM + below comp psf |
+| `flag_long_dom`    | DOM > 60d |
+| `flag_price_cuts`  | requires price history (TODO) |
+| `flag_motivated_language` | requires MLS remarks (TODO) |
+| `flag_assumable`   | requires loan recordings (paid: ATTOM) |
+| `flag_oz`          | Opportunity Zone overlay (TODO) |
+| `flag_adu_eligible` | state-level proxy (CA/OR/WA/MN/CO) |
+
+Plus `arv_estimate`, `rehab_estimate`, `max_70_rule_bid`, and an
+`alpha_stack` count (deals stacking 2–3+ sources are the framework's prized
+"4-stack" — distressed seller × value-add × use-change × operational).
+
+## Underwriting workspace (Framework §8)
+
+```
+reip underwrite --price 70000 --rehab 25000 --arv 130000 --rent 1200 --rate 0.075
+```
+
+Returns: pro forma year 1 (NOI, DSCR, cap rate, cash-on-cash), BRRRR
+refinance module (cash-out, equity-left-in, post-refi cash flow,
+infinite-return flag), 5-year IRR + equity multiple at terminal cap,
+optional sensitivity table over rent ±10%, vacancy ±200bp, exit cap ±100bp.
 
 ## Output
 
@@ -85,13 +149,60 @@ features. Sample top-rated zips on a 2026-05 ingest:
 ## CLI
 
 ```bash
-reip init                                       # create schema
-reip ingest                                     # all sources
-reip ingest --only zillow --only redfin         # subset
-reip ingest --refresh                           # bypass cache
-reip status                                     # row counts
-reip top --top 25 --min-completeness 0.85       # ranking
-reip top --w-yield 0.6 --w-growth 0.3 --w-risk 0.1 --out picks.csv
+reip init                                            # create schema
+reip ingest                                          # all sources
+reip ingest --only zillow --only redfin              # subset
+reip status                                          # row counts
+
+# MSA-level (framework Table 5)
+reip msa-rank --top 25                               # by total return
+reip msa-rank --by appreciation --top 15
+reip msa-rank --by cashflow     --top 15
+reip msa-rank --archetype "Sun Belt Growth"          # filter by archetype
+reip msa-rank --blend 0.7 --top 10                   # 70/30 weighting toward appreciation
+reip archetype Memphis                               # one-MSA factor breakdown
+
+# Property-level
+reip alpha                                           # 8-flag overlay on listings
+reip underwrite --price 70000 --rehab 25000 --arv 130000 --rent 1200 --sensitivity
+
+# Legacy zip-level (pikachu compatibility)
+reip top --top 25 --min-completeness 0.85
+```
+
+## Sample MSA outputs (2026-05-08 ingest)
+
+**Top by Cashflow Score** — matches the Cashflow Heartland thesis:
+
+| CBSA | MSA | Yield | Pop CAGR | Cashflow Score |
+|---|---|---|---|---|
+| 32820 | Memphis, TN-MS-AR | 7.78% | -0.07% | +0.106 |
+| 38300 | Pittsburgh, PA | 8.87% | +0.14% | +0.114 |
+| 40380 | Rochester, NY | 7.99% | +0.18% | +0.083 |
+| 28700 | Kingsport-Bristol, TN-VA | 7.80% | +0.21% | +0.087 |
+
+**Top by Appreciation Score** — matches the migration-driven Sun Belt / Mountain West thesis:
+
+| CBSA | MSA | Pop CAGR | Net Migration | Appr Score |
+|---|---|---|---|---|
+| 17660 | Coeur d'Alene, ID | +2.96% | +4.43% | +0.381 |
+| 24540 | Greeley, CO | +2.91% | +5.96% | +0.377 |
+| 22660 | Fort Collins-Loveland, CO | +1.46% | +4.59% | +0.332 |
+
+**`reip archetype Austin`**:
+```
+Austin-Round Rock-San Marcos, TX  (12420)
+  archetype:           Mixed
+  population:          2,357,497
+  5y pop CAGR:         +2.75%
+  net migration % pop: +3.89%
+  permits/1000 HH:     7.23           ← oversupply signal
+  gross yield:         4.77%          ← below Sun Belt floor
+  Saiz elasticity:     3.0
+  Wharton WRLURI:      -0.2
+  Appreciation Score:  +0.148
+  Cashflow Score:      -0.101
+  Total Return Score:  +0.024
 ```
 
 ## Schema

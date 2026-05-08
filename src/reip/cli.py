@@ -1,17 +1,22 @@
 """reip CLI.
 
 Commands:
-    reip init         — initialize duckdb schema
-    reip ingest       — pull all configured public datasets
-    reip top [N]      — rank zips by composite score, write CSV
-    reip status       — show row counts per table
+    reip init
+    reip ingest
+    reip status
+    reip top                   — zip-level legacy ranking
+    reip msa-rank              — Appreciation × Cashflow × Total per Table 5
+    reip archetype <CBSA>      — classify into 5 archetypes
+    reip alpha                 — property-level alpha overlay
+    reip underwrite <args>     — pro forma + DSCR + IRR + sensitivity
 """
 from __future__ import annotations
+import json
 import sys
-from pathlib import Path
 import click
+import pandas as pd
 from .store import connect, init as store_init
-from . import score as score_mod
+from . import score as score_zip, msa_score, alpha as alpha_mod, underwriting
 from .loaders import (
     zillow,
     redfin as redfin_market,
@@ -22,19 +27,27 @@ from .loaders import (
     fema,
     fred,
     zip_xwalk,
+    cbsa_xwalk,
+    acs,
+    fhfa_hpi,
+    static_data,
 )
 
 
 SOURCES = {
-    "zip_xwalk": zip_xwalk,        # must be first — others reference it
-    "zillow": zillow,
-    "redfin": redfin_market,
-    "irs": irs_migration,
-    "permits": census_permits,
-    "fema": fema,
-    "fred": fred,
-    "hud": hud_fmr,
-    "bls": bls_qcew,               # last — depends on xwalk to know which counties
+    "zip_xwalk":   zip_xwalk,
+    "cbsa_xwalk":  cbsa_xwalk,
+    "static_data": static_data,
+    "zillow":      zillow,
+    "redfin":      redfin_market,
+    "irs":         irs_migration,
+    "permits":     census_permits,
+    "fema":        fema,
+    "fred":        fred,
+    "hud":         hud_fmr,
+    "bls":         bls_qcew,
+    "acs":         acs,
+    "fhfa":        fhfa_hpi,
 }
 
 
@@ -45,20 +58,16 @@ def cli():
 
 @cli.command()
 def init():
-    """Create duckdb tables if they don't exist."""
-    con = connect()
-    store_init(con)
+    con = connect(); store_init(con)
     click.echo("Schema initialized.")
 
 
 @cli.command()
-@click.option("--only", multiple=True, help="Run only these sources (e.g. --only zillow --only redfin)")
-@click.option("--skip", multiple=True, help="Skip these sources")
-@click.option("--refresh", is_flag=True, help="Bypass HTTP cache")
+@click.option("--only", multiple=True)
+@click.option("--skip", multiple=True)
+@click.option("--refresh", is_flag=True)
 def ingest(only, skip, refresh):
-    """Pull all configured datasets into the duckdb store."""
-    con = connect()
-    store_init(con)
+    con = connect(); store_init(con)
     targets = [s for s in SOURCES if (not only or s in only) and s not in skip]
     for name in targets:
         mod = SOURCES[name]
@@ -71,18 +80,17 @@ def ingest(only, skip, refresh):
             click.echo(f" {n} rows")
         except Exception as e:
             click.echo(f" FAILED: {e}")
-    click.echo("\nDone. `reip status` for counts, `reip top` for rankings.")
 
 
 @cli.command()
 def status():
-    """Show row counts per table."""
-    con = connect()
-    store_init(con)
+    con = connect(); store_init(con)
     for table in [
         "zillow_zhvi", "zillow_zori", "redfin_market", "irs_migration",
         "census_permits", "bls_qcew", "hud_fmr", "fema_nfip", "fred_macro",
-        "zip_county_xwalk", "redfin_listings",
+        "zip_county_xwalk", "county_cbsa_xwalk", "acs_county",
+        "fhfa_hpi_metro", "saiz_elasticity", "wharton_wrluri",
+        "property_tax_state", "redfin_listings", "property_alpha",
     ]:
         try:
             n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -92,32 +100,131 @@ def status():
 
 
 @cli.command()
-@click.option("--top", "n", default=25, help="Show top N zips")
-@click.option("--state", default=None, help="Filter to a state (e.g. CA, TX)")
-@click.option("--out", type=click.Path(), default=None, help="Write full ranked CSV to this path")
+@click.option("--top", "n", default=25)
+@click.option("--out", type=click.Path(), default=None)
 @click.option("--w-yield", default=0.4)
 @click.option("--w-growth", default=0.4)
 @click.option("--w-risk", default=0.2)
-@click.option("--min-completeness", default=0.5,
-              help="Only show zips with this fraction of input signals present")
-def top(n, state, out, w_yield, w_growth, w_risk, min_completeness):
-    """Rank zips by yield × growth × risk composite. Defaults: 0.4/0.4/0.2."""
+@click.option("--min-completeness", default=0.5)
+def top(n, out, w_yield, w_growth, w_risk, min_completeness):
+    """Zip-level legacy ranking (yield × growth × risk)."""
     con = connect()
-    df = score_mod.features(con)
+    df = score_zip.features(con)
     if df.empty:
-        click.echo("No data yet — run `reip ingest`.")
-        sys.exit(1)
-    ranked = score_mod.score(df, w_yield=w_yield, w_growth=w_growth, w_risk=w_risk)
+        click.echo("No data — run `reip ingest`."); sys.exit(1)
+    ranked = score_zip.score(df, w_yield=w_yield, w_growth=w_growth, w_risk=w_risk)
     ranked = ranked[ranked["completeness"] >= min_completeness]
     if out:
         ranked.to_csv(out, index=False)
-        click.echo(f"Wrote {len(ranked)} rows → {out}")
     cols = ["zip", "zhvi", "yoy_appreciation", "gross_yield", "dom",
-            "net_agi_inflow", "permits_12mo", "flood_claims_total",
-            "completeness", "score"]
-    have = [c for c in cols if c in ranked.columns]
-    pd_repr = ranked[have].head(n).to_string(index=False, float_format=lambda x: f"{x:,.4f}")
-    click.echo(pd_repr)
+            "net_agi_inflow", "permits_12mo", "completeness", "score"]
+    click.echo(ranked[[c for c in cols if c in ranked.columns]].head(n).to_string(
+        index=False, float_format=lambda x: f"{x:,.4f}"))
+
+
+@cli.command("msa-rank")
+@click.option("--top", "n", default=30)
+@click.option("--blend", default=0.5, help="Weight on Appreciation in Total Return (default 0.5)")
+@click.option("--archetype", default=None, help="Filter to one archetype")
+@click.option("--out", type=click.Path(), default=None)
+@click.option("--by", type=click.Choice(["total", "appreciation", "cashflow"]), default="total")
+def msa_rank(n, blend, archetype, out, by):
+    """Rank MSAs per the framework's Table 5 weights."""
+    con = connect()
+    raw = msa_score.features(con)
+    if raw.empty:
+        click.echo("No MSA features — run `reip ingest` first."); sys.exit(1)
+    scored = msa_score.score(raw, blend_w_appr=blend)
+    scored = msa_score.with_archetype(scored)
+    if archetype:
+        scored = scored[scored["archetype"] == archetype]
+    sort_col = {"total": "total_return_score", "appreciation": "appreciation_score",
+                "cashflow": "cashflow_score"}[by]
+    scored = scored.sort_values(sort_col, ascending=False)
+    if out:
+        scored.to_csv(out, index=False)
+    cols = [
+        "cbsa_code", "cbsa_name", "archetype", "pop", "pop_cagr_5yr",
+        "emp_cagr_5yr", "net_migration_pct_pop", "permits_per_1000_hh",
+        "gross_yield", "elasticity", "wrluri",
+        "appreciation_score", "cashflow_score", "total_return_score", "completeness",
+    ]
+    click.echo(scored[[c for c in cols if c in scored.columns]].head(n).to_string(
+        index=False, float_format=lambda x: f"{x:,.4f}"))
+
+
+@cli.command()
+@click.argument("cbsa_or_name")
+def archetype(cbsa_or_name):
+    """Show archetype + factors for one MSA."""
+    con = connect()
+    raw = msa_score.features(con)
+    scored = msa_score.with_archetype(msa_score.score(raw))
+    match = scored[(scored["cbsa_code"].astype(str) == cbsa_or_name) |
+                   (scored["cbsa_name"].str.contains(cbsa_or_name, case=False, na=False))]
+    if match.empty:
+        click.echo(f"No MSA matching '{cbsa_or_name}'"); sys.exit(1)
+    row = match.iloc[0].to_dict()
+    click.echo(f"\n{row['cbsa_name']}  ({row['cbsa_code']})")
+    click.echo(f"  archetype:           {row['archetype']}")
+    click.echo(f"  population:          {row['pop']:,.0f}")
+    click.echo(f"  5y pop CAGR:         {row['pop_cagr_5yr']*100:+.2f}%")
+    click.echo(f"  5y emp CAGR:         {(row['emp_cagr_5yr'] or 0)*100:+.2f}%")
+    click.echo(f"  net migration % pop: {(row['net_migration_pct_pop'] or 0)*100:+.2f}%")
+    click.echo(f"  permits/1000 HH:     {row['permits_per_1000_hh'] or 0:.2f}")
+    click.echo(f"  gross yield:         {(row['gross_yield'] or 0)*100:.2f}%")
+    click.echo(f"  Saiz elasticity:     {row['elasticity']}")
+    click.echo(f"  Wharton WRLURI:      {row['wrluri']}")
+    click.echo(f"  property tax %:      {row['effective_property_tax']}")
+    click.echo(f"\n  Appreciation Score:  {row['appreciation_score']:+.3f}")
+    click.echo(f"  Cashflow Score:      {row['cashflow_score']:+.3f}")
+    click.echo(f"  Total Return Score:  {row['total_return_score']:+.3f}")
+    click.echo(f"  completeness:        {row['completeness']*100:.0f}%")
+
+
+@cli.command()
+@click.option("--out", type=click.Path(), default=None)
+def alpha(out):
+    """Compute property-level alpha overlay over redfin_listings."""
+    con = connect()
+    df = alpha_mod.compute(con)
+    if df.empty:
+        click.echo("No listings yet. Run the redfin_listings ingest with cookies."); sys.exit(1)
+    n = alpha_mod.persist(con)
+    click.echo(f"Stamped alpha on {n} listings.")
+    if out:
+        df.to_csv(out, index=False)
+    click.echo(df.sort_values("alpha_stack", ascending=False).head(15).to_string(index=False))
+
+
+@cli.command()
+@click.option("--price", "purchase_price", required=True, type=float)
+@click.option("--rehab", "rehab_cost", default=0.0, type=float)
+@click.option("--arv", default=None, type=float)
+@click.option("--rent", "monthly_rent", required=True, type=float)
+@click.option("--rate", "mortgage_rate", default=0.07, type=float)
+@click.option("--ltv", default=0.75, type=float)
+@click.option("--vacancy", default=0.05, type=float)
+@click.option("--exit-cap", default=0.06, type=float)
+@click.option("--hold", "hold_years", default=5, type=int)
+@click.option("--sensitivity", "show_sensitivity", is_flag=True)
+def underwrite(purchase_price, rehab_cost, arv, monthly_rent, mortgage_rate,
+               ltv, vacancy, exit_cap, hold_years, show_sensitivity):
+    """Underwrite a single property: pro forma, DSCR, IRR, BRRRR refi.
+
+    Example:
+      reip underwrite --price 200000 --rehab 30000 --arv 280000 --rent 2200
+    """
+    a = underwriting.Assumptions(
+        purchase_price=purchase_price, rehab_cost=rehab_cost, arv=arv,
+        monthly_rent=monthly_rent, mortgage_rate=mortgage_rate, ltv=ltv,
+        vacancy=vacancy, exit_cap=exit_cap, hold_years=hold_years,
+    )
+    out = underwriting.underwrite(a)
+    click.echo(json.dumps(out, indent=2, default=str))
+    if show_sensitivity:
+        click.echo("\nSensitivity (rent × vacancy × exit cap → IRR / equity multiple):")
+        click.echo(underwriting.sensitivity(a).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
 
 if __name__ == "__main__":

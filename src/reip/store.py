@@ -74,6 +74,49 @@ CREATE TABLE IF NOT EXISTS zip_county_xwalk (
     zip VARCHAR, fips_county VARCHAR, weight DOUBLE,
     PRIMARY KEY (zip, fips_county)
 );
+CREATE TABLE IF NOT EXISTS county_cbsa_xwalk (
+    fips_county VARCHAR PRIMARY KEY,
+    cbsa_code VARCHAR, cbsa_name VARCHAR, cbsa_type VARCHAR,
+    state VARCHAR
+);
+CREATE TABLE IF NOT EXISTS acs_county (
+    fips_county VARCHAR, year INTEGER,
+    population DOUBLE, households DOUBLE,
+    median_household_income DOUBLE,
+    median_home_value DOUBLE, median_gross_rent DOUBLE,
+    PRIMARY KEY (fips_county, year)
+);
+CREATE TABLE IF NOT EXISTS fhfa_hpi_metro (
+    cbsa_code VARCHAR, period DATE, hpi DOUBLE,
+    PRIMARY KEY (cbsa_code, period)
+);
+CREATE TABLE IF NOT EXISTS saiz_elasticity (
+    cbsa_name VARCHAR PRIMARY KEY, elasticity DOUBLE,
+    state VARCHAR
+);
+CREATE TABLE IF NOT EXISTS wharton_wrluri (
+    cbsa_name VARCHAR PRIMARY KEY, wrluri_2018 DOUBLE,
+    state VARCHAR
+);
+CREATE TABLE IF NOT EXISTS property_tax_state (
+    state VARCHAR PRIMARY KEY,
+    effective_rate_pct DOUBLE   -- Lincoln Institute / Tax Foundation effective rate
+);
+CREATE TABLE IF NOT EXISTS msa_archetype (
+    cbsa_code VARCHAR PRIMARY KEY,
+    archetype VARCHAR
+);
+CREATE TABLE IF NOT EXISTS property_alpha (
+    mls VARCHAR PRIMARY KEY,
+    flag_fixer_upper BOOLEAN, flag_distressed BOOLEAN,
+    flag_long_dom BOOLEAN, flag_price_cuts BOOLEAN,
+    flag_motivated_language BOOLEAN, flag_assumable BOOLEAN,
+    flag_oz BOOLEAN, flag_adu_eligible BOOLEAN,
+    arv_estimate DOUBLE, rehab_estimate DOUBLE,
+    max_70_rule_bid DOUBLE,
+    alpha_stack INTEGER,
+    pulled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS redfin_listings (
     mls VARCHAR PRIMARY KEY,
     region VARCHAR, url VARCHAR, street_address VARCHAR,
