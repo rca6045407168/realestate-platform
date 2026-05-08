@@ -70,7 +70,7 @@ async function loadDashboard() {
     + '<th>Cmp</th>'
     + '</tr></thead><tbody>';
   for (const m of MSAS) {
-    html += `<tr onclick="openMsa('${m.cbsa_code}')">
+    html += `<tr onclick="openMsaListings('${m.cbsa_code}', '${(m.cbsa_name||'').replace(/'/g, "\\'")}')" title="Click to see live listings in this metro">
       <td class="text-muted">${m.cbsa_code}</td>
       <td>${m.cbsa_name || ''}</td>
       <td class="${archCls(m.archetype)}">${m.archetype || ''}</td>
@@ -94,7 +94,28 @@ async function loadDashboard() {
   document.addEventListener('DOMContentLoaded', () => $(id).addEventListener('input', loadDashboard));
 });
 
-// ---- MSA DETAIL ----------------------------------------------------------
+// ---- MSA → LIVE LISTINGS jump ------------------------------------------
+
+async function openMsaListings(cbsa_code, cbsa_name) {
+  // Switch to Buy ideas, ensure the dropdown has this CBSA selected
+  // (add a temporary option if the metro isn't in MARKETS), and run.
+  go('buy');
+  await loadMarkets();
+  const sel = $('buyCbsa');
+  let opt = Array.from(sel.options).find(o => o.value === cbsa_code);
+  if (!opt) {
+    opt = document.createElement('option');
+    opt.value = cbsa_code;
+    opt.textContent = cbsa_name + '  —  (not yet wired for live listings)';
+    opt.dataset.unmapped = '1';
+    sel.appendChild(opt);
+  }
+  sel.value = cbsa_code;
+  loadBuy();
+}
+window.openMsaListings = openMsaListings;
+
+// ---- MSA DETAIL (legacy, kept for direct link access) -------------------
 
 async function openMsa(cbsa_code) {
   go('msa');
@@ -446,7 +467,15 @@ async function loadBuy() {
   }
   $('buyMeta').textContent = `${r.market || ''} · archetype ${r.archetype || '—'} · ${r.results.length} properties scored`;
   if (!r.results.length) {
-    $('buyHost').innerHTML = `<div class="col-span-3 p-6 text-yellow">No results.${(r.warnings || []).map(w => '<br>'+w).join('')}</div>`;
+    const sel = $('buyCbsa');
+    const cur = sel.options[sel.selectedIndex];
+    const isUnmapped = cur && cur.dataset.unmapped === '1';
+    const reason = isUnmapped
+      ? `<div class="text-yellow text-sm">This metro doesn't yet have a verified Redfin region_id, so the live-listings search returned nothing.</div>
+         <div class="text-muted text-sm mt-2">Try <button onclick="document.getElementById('buyCbsa').value='all'; loadBuy();" class="text-accent underline">★ Best across all markets</button>, or paste a specific Redfin URL into the <button onclick="go('underwrite')" class="text-accent underline">Underwrite</button> tab.</div>`
+      : `<div class="text-yellow text-sm">No listings matched your filters.</div>
+         <div class="text-muted text-sm mt-2">Try widening price band or relaxing the IRR / DSCR thresholds.</div>`;
+    $('buyHost').innerHTML = `<div class="col-span-3 p-6">${reason}${(r.warnings || []).length ? '<div class="text-xs text-muted mt-3">'+r.warnings.join('<br>')+'</div>' : ''}</div>`;
     return;
   }
   $('buyHost').innerHTML = r.results.map(renderBuyCard).join('');
