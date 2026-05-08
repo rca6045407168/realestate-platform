@@ -42,7 +42,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 
 def _clean(d: dict) -> dict:
-    """Replace NaN/Inf with None for JSON."""
+    """Replace NaN/Inf with None for JSON (shallow)."""
     out = {}
     for k, v in d.items():
         if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
@@ -50,6 +50,21 @@ def _clean(d: dict) -> dict:
         else:
             out[k] = v
     return out
+
+
+def _sanitize(obj):
+    """Recursively replace NaN / Inf / out-of-range floats with None.
+    Use at every JSON response boundary so the JSON serializer (which
+    rejects nan/inf hard) doesn't 500 the request."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    return obj
 
 
 # ---- pydantic IO models -----------------------------------------------------
@@ -304,7 +319,7 @@ def zips_top(
         state=state, cbsa_code=cbsa, sort=sort, limit=limit,
         archetypes_by_cbsa=archetypes,
     )
-    return {"results": [zip_returns_mod.to_dict(z) for z in rows], "count": len(rows)}
+    return _sanitize({"results": [zip_returns_mod.to_dict(z) for z in rows], "count": len(rows)})
 
 
 @app.get("/api/listings/markets")

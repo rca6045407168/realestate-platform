@@ -217,23 +217,37 @@ def rank_us(
         equity_paydown_5y = max(0.0, loan - balance)
         total_5y = rental_profit_5y + appr_5y_dollars + equity_paydown_5y
 
+        # JSON safety: cap dscr at 999 (it goes inf when debt_service=0
+        # under 100% LTV) and skip rows where any required metric is
+        # non-finite. The serializer rejects nan/inf hard.
+        import math
+        def _safe(x, default=0.0):
+            if x is None: return default
+            try:
+                xf = float(x)
+                if math.isnan(xf) or math.isinf(xf):
+                    return default
+                return xf
+            except (TypeError, ValueError):
+                return default
+        dscr_safe = min(999.0, _safe(dscr, 0.0))
         out.append(ZipReturn(
             zip=r.zip,
             state=r.state,
             cbsa_code=str(r.cbsa_code) if r.cbsa_code else None,
             cbsa_name=r.cbsa_name,
-            typical_price=round(price),
-            typical_rent=round(rent),
-            appreciation_cagr=round(appr_cagr, 4),
-            appreciation_5y_pct=round(appr_5y_pct, 4),
-            appreciation_5y_dollars=round(appr_5y_dollars, 2),
-            rental_profit_5y=round(rental_profit_5y, 2),
-            total_return_5y_dollars=round(total_5y, 2),
-            total_return_5y_pct=round(total_5y / equity, 4) if equity > 0 else 0.0,
-            irr_5y=round(irr_5y, 4),
-            cap_rate_y1=round(cap_rate, 4),
-            dscr_y1=round(dscr, 2),
-            vacancy_used=round(vacancy, 4),
+            typical_price=round(_safe(price)),
+            typical_rent=round(_safe(rent)),
+            appreciation_cagr=round(_safe(appr_cagr), 4),
+            appreciation_5y_pct=round(_safe(appr_5y_pct), 4),
+            appreciation_5y_dollars=round(_safe(appr_5y_dollars), 2),
+            rental_profit_5y=round(_safe(rental_profit_5y), 2),
+            total_return_5y_dollars=round(_safe(total_5y), 2),
+            total_return_5y_pct=round(_safe(total_5y / equity) if equity > 0 else 0.0, 4),
+            irr_5y=round(_safe(irr_5y), 4),
+            cap_rate_y1=round(_safe(cap_rate), 4),
+            dscr_y1=round(dscr_safe, 2),
+            vacancy_used=round(_safe(vacancy), 4),
             archetype_hint=archetype,
             redfin_search_url=f"https://www.redfin.com/zipcode/{r.zip}",
             zillow_search_url=f"https://www.zillow.com/homes/{r.zip}_rb/",
