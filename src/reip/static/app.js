@@ -635,9 +635,12 @@ async function loadTopZips() {
     + '<th>Browse</th>'
     + '</tr></thead><tbody>';
   r.results.forEach((z, i) => {
-    html += `<tr>
+    // Whole row opens Redfin search for that ZIP in a new tab. Browse
+    // column links retained for explicit Zillow choice; the inner <a>s
+    // get a stopPropagation handler so they don't double-open.
+    html += `<tr onclick="window.open('${z.redfin_search_url}', '_blank')" style="cursor: pointer" title="Click to see actual listings in ZIP ${z.zip} on Redfin">
       <td class="text-muted">${i+1}</td>
-      <td class="num">${z.zip}</td>
+      <td class="num text-accent font-semibold">${z.zip}</td>
       <td>${z.state || '—'}</td>
       <td class="text-xs">${z.cbsa_name || '—'}</td>
       <td class="text-right num">${fmtMoney(z.typical_price)}</td>
@@ -649,9 +652,9 @@ async function loadTopZips() {
       <td class="text-right num">${fmtPct(z.cap_rate_y1, 1)}</td>
       <td class="text-right num">${z.dscr_y1.toFixed(2)}×</td>
       <td class="text-right num">${fmtPct(z.vacancy_used, 1)}</td>
-      <td class="text-xs whitespace-nowrap">
-        <a href="${z.redfin_search_url}" target="_blank" class="text-accent hover:underline">Redfin</a> ·
-        <a href="${z.zillow_search_url}" target="_blank" class="text-accent hover:underline">Zillow</a>
+      <td class="text-xs whitespace-nowrap" onclick="event.stopPropagation()">
+        <a href="${z.redfin_search_url}" target="_blank" rel="noreferrer" class="text-accent hover:underline">Redfin↗</a> ·
+        <a href="${z.zillow_search_url}" target="_blank" rel="noreferrer" class="text-accent hover:underline">Zillow↗</a>
       </td>
     </tr>`;
   });
