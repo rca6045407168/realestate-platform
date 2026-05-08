@@ -30,6 +30,7 @@ from .store import connect
 from . import msa_score, avm as avm_mod, remarks as remarks_mod
 from . import underwriting as uw_mod
 from . import recommendation as rec_mod
+from . import property_ingest as ingest_mod
 
 app = FastAPI(title="reip", version="0.4.0",
               description="Real estate investment platform — deal-screening + underwriting")
@@ -113,6 +114,10 @@ class MitigationRequest(BaseModel):
 
 class RemarksRequest(BaseModel):
     text: str
+
+
+class IngestRequest(BaseModel):
+    url: str = Field(..., description="Redfin / Zillow / Realtor.com listing URL")
 
 
 # ---- routes -----------------------------------------------------------------
@@ -256,6 +261,26 @@ def mitigations(req: MitigationRequest):
     mits = rec_mod.VerifiedMitigations(**req.mitigations)
     out = rec_mod.classify(deal, mits)
     return out.to_dict()
+
+
+@app.post("/api/properties/ingest")
+def ingest_property(req: IngestRequest):
+    """Paste a Redfin / Zillow / Realtor URL → property dict.
+
+    Best-effort scrape: address, price, beds/baths/sqft, year built, lot,
+    plus a Redfin AVM rent estimate when available. Falls back to ZORI for
+    the zip if no listing-side rent comes through.
+    """
+    p = ingest_mod.ingest(req.url)
+    out = ingest_mod.to_dict(p)
+    if out.get("rent_estimate") is None and out.get("zip"):
+        con = connect()
+        zori = ingest_mod.rent_estimate_from_zori(con, out["zip"])
+        if zori:
+            out["rent_estimate"] = round(zori, 2)
+            out["rent_source"] = "ZORI fallback"
+            out["extracted_via"] = list(out["extracted_via"]) + ["zori:zip"]
+    return out
 
 
 @app.get("/api/coverage-map")

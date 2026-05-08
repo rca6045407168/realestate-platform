@@ -366,9 +366,59 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+// ---- Listing ingestion -------------------------------------------------
+
+async function ingestLink() {
+  const url = $('linkInput').value.trim();
+  if (!url) return;
+  $('linkOut').innerHTML = '<span class="text-muted">Fetching…</span>';
+  let p;
+  try {
+    p = await api('/properties/ingest', { method: 'POST', body: JSON.stringify({ url }) });
+  } catch (e) {
+    $('linkOut').innerHTML = `<span class="text-red">${e.message}</span>`;
+    return;
+  }
+  // Prefill known fields
+  const prefilled = [];
+  function set(id, val) {
+    if (val == null || val === '' || (typeof val === 'number' && isNaN(val))) return;
+    const el = $('uw_' + id);
+    if (!el) return;
+    el.value = val;
+    prefilled.push(id);
+  }
+  set('purchase_price', p.listed_price);
+  set('arv',            p.listed_price);  // user can adjust upward
+  set('monthly_rent',   p.rent_estimate);
+
+  // Pretty status line
+  const addr = [p.address, p.city, p.state, p.zip].filter(Boolean).join(', ');
+  const fields = [];
+  if (p.listed_price)  fields.push(`<b>$${fmtNum(p.listed_price)}</b>`);
+  if (p.beds)          fields.push(`${p.beds} bd`);
+  if (p.baths)         fields.push(`${p.baths} ba`);
+  if (p.sqft)          fields.push(`${fmtNum(p.sqft)} sqft`);
+  if (p.year_built)    fields.push(`built ${p.year_built}`);
+  const rent = p.rent_estimate
+    ? `· rent <b>$${fmtNum(p.rent_estimate)}</b>/mo (${p.rent_source || 'listing'})`
+    : '· <span class="text-yellow">no rent estimate — enter manually</span>';
+  const via = p.extracted_via && p.extracted_via.length ? ` · via ${p.extracted_via.join(' + ')}` : '';
+  const warn = p.warnings && p.warnings.length
+    ? `<div class="text-red mt-1">⚠ ${p.warnings.join(' · ')}</div>` : '';
+  $('linkOut').innerHTML = `
+    <div><span class="text-fg">${addr || '(address not extracted)'}</span></div>
+    <div>${fields.join(' · ')} ${rent}${via}</div>
+    <div class="text-green mt-1">Prefilled ${prefilled.length} field(s): ${prefilled.join(', ') || '(none)'} — review and run.</div>
+    ${warn}
+  `;
+}
+
 // Boot
 document.addEventListener('DOMContentLoaded', () => {
   renderUwForm();
   $('uwSubmit').addEventListener('click', runUnderwrite);
+  $('linkSubmit').addEventListener('click', ingestLink);
+  $('linkInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') ingestLink(); });
   go('dashboard');
 });
