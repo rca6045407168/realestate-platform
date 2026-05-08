@@ -286,7 +286,7 @@ def mitigations(req: MitigationRequest):
 def zips_top(
     state: Optional[str] = None,
     cbsa: Optional[str] = None,
-    sort: str = Query("irr", pattern="^(irr|total_return|cashflow|appreciation|yield)$"),
+    sort: str = Query("regime", pattern="^(regime|irr|total_return|cashflow|appreciation|yield)$"),
     limit: int = 100,
     min_price: int = 50_000,
     max_price: int = 800_000,

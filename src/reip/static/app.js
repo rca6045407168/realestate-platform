@@ -629,7 +629,10 @@ async function loadTopZips() {
   let html = '<table class="tight w-full text-sm"><thead><tr>'
     + '<th>Rank</th><th>ZIP</th><th>State</th><th>Metro</th>'
     + '<th class="text-right">ZHVI</th><th class="text-right">ZORI</th>'
-    + '<th class="text-right" title="Last 12 months ZHVI change — momentum signal">12mo</th>'
+    + '<th class="text-right" title="Last 12 months ZHVI change — price momentum">price 12mo</th>'
+    + '<th class="text-right" title="Last 12 months ZORI change — rent momentum">rent 12mo</th>'
+    + '<th title="Composite regime: avg(price+rent 12mo) clipped to ±15%">Regime</th>'
+    + '<th class="text-right" title="Regime-adjusted: IRR × (1 + regime_score)">Adj IRR</th>'
     + '<th class="text-right">5y IRR</th><th class="text-right">5y total ($)</th>'
     + '<th class="text-right">5y rental ($)</th><th class="text-right">5y appr ($)</th>'
     + '<th class="text-right">cap</th><th class="text-right">DSCR</th><th class="text-right">vac</th>'
@@ -647,7 +650,10 @@ async function loadTopZips() {
       <td class="text-right num">${fmtMoney(z.typical_price)}</td>
       <td class="text-right num">${fmtMoney(z.typical_rent)}/mo</td>
       <td class="text-right num ${z.chg_12mo < -0.05 ? 'text-red' : z.chg_12mo > 0.05 ? 'text-green' : 'text-muted'}" title="Trailing 5y CAGR ${fmtPct(z.appreciation_cagr_5y_trail, 1)} · Trailing 2y CAGR ${fmtPct(z.appreciation_cagr_2y_trail, 1)}">${fmtPct(z.chg_12mo, 1)}</td>
-      <td class="text-right num ${z.irr_5y > 0.10 ? 'text-green' : z.irr_5y < 0 ? 'text-red' : ''}">${fmtPct(z.irr_5y, 1)}</td>
+      <td class="text-right num ${z.rent_chg_12mo < -0.05 ? 'text-red' : z.rent_chg_12mo > 0.05 ? 'text-green' : 'text-muted'}">${fmtPct(z.rent_chg_12mo, 1)}</td>
+      <td class="text-xs ${z.regime_label === 'expanding' ? 'text-green' : z.regime_label === 'crash' ? 'text-red font-semibold' : z.regime_label === 'contracting' ? 'text-yellow' : 'text-muted'}">${z.regime_label}</td>
+      <td class="text-right num ${z.regime_adjusted_irr > 0.10 ? 'text-green' : z.regime_adjusted_irr < 0 ? 'text-red' : ''}">${fmtPct(z.regime_adjusted_irr, 1)}</td>
+      <td class="text-right num ${z.irr_5y > 0.10 ? 'text-green' : z.irr_5y < 0 ? 'text-red' : 'text-muted'}">${fmtPct(z.irr_5y, 1)}</td>
       <td class="text-right num ${z.total_return_5y_dollars > 0 ? 'text-green' : 'text-red'}">${fmtMoney(z.total_return_5y_dollars)}</td>
       <td class="text-right num ${z.rental_profit_5y > 0 ? 'text-green' : 'text-red'}">${fmtMoney(z.rental_profit_5y)}</td>
       <td class="text-right num ${z.appreciation_5y_dollars > 0 ? 'text-green' : 'text-red'}">${fmtMoney(z.appreciation_5y_dollars)}</td>

@@ -44,7 +44,11 @@ class ZipReturn:
     appreciation_cagr: float          # forward projection (momentum-aware blend)
     appreciation_cagr_5y_trail: float # trailing 5y CAGR (raw)
     appreciation_cagr_2y_trail: float # trailing 2y CAGR (raw)
-    chg_12mo: float                   # last 12 months change (sanity check)
+    chg_12mo: float                   # ZHVI 12mo change
+    rent_chg_12mo: float              # ZORI 12mo change
+    regime_score: float               # composite regime indicator (-1 to +1)
+    regime_label: str                 # 'expanding' | 'mixed' | 'contracting' | 'crash'
+    regime_adjusted_irr: float        # IRR scaled by (1 + regime_score), clamped
     appreciation_5y_pct: float
     appreciation_5y_dollars: float
     rental_profit_5y: float
@@ -68,11 +72,12 @@ zhvi_now AS  (SELECT zip, value AS zhvi        FROM zhvi_ranked WHERE rn = 1),
 zhvi_12 AS   (SELECT zip, value AS zhvi_12mo   FROM zhvi_ranked WHERE rn = 13),
 zhvi_24 AS   (SELECT zip, value AS zhvi_24mo   FROM zhvi_ranked WHERE rn = 25),
 zhvi_60 AS   (SELECT zip, value AS zhvi_5y_ago FROM zhvi_ranked WHERE rn = 60),
-zori_now AS (
-    SELECT zip, value AS zori
-    FROM (SELECT zip, value, ROW_NUMBER() OVER (PARTITION BY zip ORDER BY period DESC) AS rn FROM zillow_zori)
-    WHERE rn = 1
+zori_ranked AS (
+    SELECT zip, value, ROW_NUMBER() OVER (PARTITION BY zip ORDER BY period DESC) AS rn
+    FROM zillow_zori
 ),
+zori_now AS (SELECT zip, value AS zori           FROM zori_ranked WHERE rn = 1),
+zori_12 AS  (SELECT zip, value AS zori_12mo_ago FROM zori_ranked WHERE rn = 13),
 vacancy_per_zip AS (
     SELECT z.zip,
            a.vacant_for_rent / NULLIF(a.vacant_for_rent + a.renter_occupied, 0) AS vac
@@ -86,6 +91,7 @@ SELECT zhvi_now.zip,
        zhvi_24.zhvi_24mo,
        zhvi_60.zhvi_5y_ago,
        zori_now.zori,
+       zori_12.zori_12mo_ago,
        vacancy_per_zip.vac,
        c.cbsa_code, c.cbsa_name, c.state
 FROM zhvi_now
@@ -93,6 +99,7 @@ JOIN zori_now USING (zip)
 LEFT JOIN zhvi_12 USING (zip)
 LEFT JOIN zhvi_24 USING (zip)
 LEFT JOIN zhvi_60 USING (zip)
+LEFT JOIN zori_12 USING (zip)
 LEFT JOIN vacancy_per_zip USING (zip)
 LEFT JOIN zip_county_xwalk z ON z.zip = zhvi_now.zip
 LEFT JOIN county_cbsa_xwalk c ON c.fips_county = z.fips_county
@@ -179,6 +186,23 @@ def rank_us(
 
         archetype = archetypes_by_cbsa.get(str(r.cbsa_code) if r.cbsa_code else None) or "Mixed"
         appr_cagr = max(-0.05, min(0.10, raw_cagr * overlay_by_arch.get(archetype, 0.85)))
+
+        # Rent momentum (ZORI 12mo change). Tells you whether the income
+        # side of the deal is expanding or contracting right now.
+        zori_12mo = r.zori_12mo_ago
+        rent_chg_12mo = (rent / float(zori_12mo) - 1) if (zori_12mo is not None and not pd.isna(zori_12mo) and zori_12mo > 0) else None
+
+        # Composite regime score: equal-weighted price + rent momentum,
+        # clipped to ±15% per leg so a single noisy zip doesn't dominate.
+        # Range: -0.30 (both crashing 15%+) to +0.30 (both up 15%+).
+        def _clip(x, lo=-0.15, hi=0.15):
+            if x is None: return 0.0
+            return max(lo, min(hi, x))
+        regime_score = (_clip(chg_12mo) + _clip(rent_chg_12mo)) / 2
+        if regime_score >= 0.05:    regime_label = "expanding"
+        elif regime_score <= -0.10: regime_label = "crash"
+        elif regime_score <= -0.03: regime_label = "contracting"
+        else:                       regime_label = "mixed"
         appr_5y_pct = (1 + appr_cagr) ** HOLD_YEARS - 1
         appr_5y_dollars = price * appr_5y_pct
 
@@ -243,6 +267,12 @@ def rank_us(
         equity_paydown_5y = max(0.0, loan - balance)
         total_5y = rental_profit_5y + appr_5y_dollars + equity_paydown_5y
 
+        # Regime-adjusted IRR: scale IRR by (1 + regime_score), clamped to
+        # [-0.99, 5.0]. A zip with -10% combined momentum has its IRR
+        # multiplied by 0.90; a zip with +10% by 1.10. This is the metric
+        # we sort by when the user picks 'regime' in the sort dropdown.
+        regime_adj_irr = max(-0.99, min(5.0, irr_5y * (1 + regime_score)))
+
         # JSON safety: cap dscr at 999 (it goes inf when debt_service=0
         # under 100% LTV) and skip rows where any required metric is
         # non-finite. The serializer rejects nan/inf hard.
@@ -268,6 +298,10 @@ def rank_us(
             appreciation_cagr_5y_trail=round(_safe(cagr_5y), 4),
             appreciation_cagr_2y_trail=round(_safe(cagr_2y), 4),
             chg_12mo=round(_safe(chg_12mo), 4),
+            rent_chg_12mo=round(_safe(rent_chg_12mo), 4),
+            regime_score=round(_safe(regime_score), 4),
+            regime_label=regime_label,
+            regime_adjusted_irr=round(_safe(regime_adj_irr), 4),
             appreciation_5y_pct=round(_safe(appr_5y_pct), 4),
             appreciation_5y_dollars=round(_safe(appr_5y_dollars), 2),
             rental_profit_5y=round(_safe(rental_profit_5y), 2),
@@ -283,6 +317,7 @@ def rank_us(
         ))
 
     sort_key = {
+        "regime":       lambda z: z.regime_adjusted_irr,
         "irr":          lambda z: z.irr_5y,
         "total_return": lambda z: z.total_return_5y_dollars,
         "cashflow":     lambda z: z.rental_profit_5y,

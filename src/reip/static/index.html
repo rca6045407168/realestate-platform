@@ -148,11 +148,10 @@
   <!-- ============== TOP ZIPS (NATIONWIDE) =================== -->
   <section id="screen-topzips" class="screen hidden">
     <div class="text-xs text-muted mb-3">
-      Ranks every US zip with both ZHVI + ZORI coverage by 5y expected IRR.
-      Forward appreciation = momentum-aware blend (60% trailing 2y + 40% trailing 5y),
-      with a recent-rollover floor: any zip down >5% in the last 12 months has its
-      forward projection capped at the actual 12mo trend. The 12mo column shows
-      that signal so you can see why a zip is downgraded.
+      Default rank = <b>regime-adjusted 5y IRR</b>. Each zip's IRR is multiplied
+      by (1 + regime_score) where regime_score = avg(price 12mo, rent 12mo)
+      clipped to ±15% per leg. Markets in 'crash' regime get demoted; 'expanding'
+      get promoted. Switch sort to '5y IRR (raw)' to see the unadjusted ranking.
       Click any row to deep-link into Redfin for actual listings.
     </div>
     <div class="flex flex-wrap gap-3 mb-4 items-center">
@@ -162,7 +161,8 @@
       <input id="tzCbsa" type="text" placeholder="any" maxlength="5" class="bg-bg border border-line rounded px-2 py-1 text-sm w-20">
       <label class="text-sm text-muted">Sort</label>
       <select id="tzSort" class="bg-bg border border-line rounded px-2 py-1 text-sm">
-        <option value="irr">5y IRR</option>
+        <option value="regime">Regime-adjusted IRR (default)</option>
+        <option value="irr">5y IRR (raw)</option>
         <option value="total_return">5y total return ($)</option>
         <option value="cashflow">5y rental profit ($)</option>
         <option value="appreciation">5y appreciation ($)</option>
