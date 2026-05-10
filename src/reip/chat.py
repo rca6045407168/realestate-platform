@@ -38,6 +38,38 @@ except ImportError:
 
 
 MODEL = "claude-sonnet-4-5"
+# Fallback when the primary model 429s (Claude Code Max shares quota with
+# the user's active Claude Code session). Haiku has its own bucket on the
+# Max plan and is plenty for tool-use orchestration.
+FALLBACK_MODEL = "claude-haiku-4-5"
+
+
+def _get_claude_code_oauth_token() -> str | None:
+    """Read the Claude Code OAuth access token from macOS keychain.
+
+    Claude Code stores credentials as a JSON blob under the generic-password
+    entry 'Claude Code-credentials'. The shape is:
+      {"claudeAiOauth": {"accessToken": "sk-ant-o…", "refreshToken": ..., ...}}
+
+    Returns the access token string, or None if unavailable / non-macOS.
+    Note: tokens expire; refresh is not implemented here — if Claude Code
+    has run recently the token will be fresh.
+    """
+    import subprocess, json, sys
+    if sys.platform != "darwin":
+        return None
+    try:
+        r = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        blob = json.loads((r.stdout or "").strip())
+        token = ((blob.get("claudeAiOauth") or {}).get("accessToken") or "").strip()
+        return token or None
+    except Exception:
+        return None
 
 # Tool schemas — JSON Schema per Anthropic's tool-use spec.
 TOOLS = [
@@ -361,15 +393,12 @@ def chat(user_message: str, history: list[dict] | None = None,
     """
     if anthropic is None:
         return {"error": "anthropic SDK not installed. `uv pip install anthropic`."}
-    # Re-load .env here so a key dropped at the project root is picked up
-    # even if config.py was imported before the file existed.
-    # override=True because the parent shell often exports
-    # ANTHROPIC_API_KEY="" (empty) and load_dotenv(override=False)
-    # would refuse to overwrite that with the real value from .env.
+    # Resolve credentials. Order: (1) ANTHROPIC_API_KEY env / .env,
+    # (2) Claude Code OAuth bearer token stored in macOS keychain
+    # (so a Claude Max subscriber doesn't need a separate API key).
     try:
         from dotenv import load_dotenv
         from pathlib import Path
-        # Look for .env at project root regardless of CWD
         env_path = Path(__file__).resolve().parents[2] / ".env"
         if env_path.exists():
             load_dotenv(env_path, override=True)
@@ -378,15 +407,34 @@ def chat(user_message: str, history: list[dict] | None = None,
     except ImportError:
         pass
     api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
-    if not api_key:
-        return {"error": (
-            "Set ANTHROPIC_API_KEY to enable chat. Either: "
-            "(a) echo 'ANTHROPIC_API_KEY=sk-ant-…' >> /Users/richardchen/realestate-platform/.env "
-            "then restart `reip serve`, or "
-            "(b) ANTHROPIC_API_KEY=sk-ant-… reip serve."
-        )}
+    oauth_token = _get_claude_code_oauth_token()
 
-    client = anthropic.Anthropic(api_key=api_key)
+    if api_key and len(api_key) >= 50:
+        client = anthropic.Anthropic(api_key=api_key)
+        auth_mode = "api_key"
+    elif oauth_token:
+        # OAuth flow: don't pass api_key at all — the SDK uses x-api-key
+        # if api_key is truthy and Authorization: Bearer otherwise. Empty
+        # string disables x-api-key. Also strip the env var so the SDK
+        # doesn't auto-populate api_key from ANTHROPIC_API_KEY at init.
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        client = anthropic.Anthropic(
+            api_key="",
+            auth_token=oauth_token,
+            default_headers={
+                "anthropic-beta": "oauth-2025-04-20",
+                "User-Agent": "claude-cli/1.0.0 (external, cli)",
+            },
+        )
+        auth_mode = "claude_code_oauth"
+    else:
+        return {"error": (
+            "No Anthropic credentials found. Either:\n"
+            "  (a) Add ANTHROPIC_API_KEY=sk-ant-api03-… to "
+            "/Users/richardchen/realestate-platform/.env, or\n"
+            "  (b) Log in to Claude Code (which stores an OAuth token in "
+            "macOS keychain under 'Claude Code-credentials')."
+        )}
     context = _build_context()
     system = SYSTEM_PROMPT + "\n\n" + context
 
@@ -396,23 +444,43 @@ def chat(user_message: str, history: list[dict] | None = None,
         messages.append({"role": h["role"], "content": h["content"]})
     messages.append({"role": "user", "content": user_message})
 
+    # Model selection: try primary first, fall back to FALLBACK_MODEL on 429.
+    # Claude Code Max plan shares its sonnet quota with the active Claude
+    # Code session, so when both are active sonnet 429s; haiku has its own
+    # bucket and almost always works.
+    model = MODEL
     tool_calls = []
+    fallback_used = False
     for _ in range(max_tool_iters):
         try:
             resp = client.messages.create(
-                model=MODEL,
+                model=model,
                 max_tokens=2000,
                 system=system,
                 tools=TOOLS,
                 messages=messages,
             )
-        except anthropic.AuthenticationError:
+        except anthropic.AuthenticationError as e:
+            if auth_mode == "api_key":
+                return {"error": (
+                    f"Anthropic rejected the API key (401). Check .env — key length "
+                    f"{len(api_key)} chars (real keys are ~100). Paste again."
+                )}
             return {"error": (
-                f"Anthropic rejected the API key (401). Check .env — key length "
-                f"{len(api_key)} chars (real keys are ~100). Paste again."
+                f"Anthropic rejected the Claude Code OAuth token (401). "
+                f"Either the token expired (re-run `claude` interactively to refresh) "
+                f"or this OAuth scope doesn't grant Messages API access. Detail: {e}"
             )}
         except anthropic.RateLimitError as e:
-            return {"error": f"Anthropic rate-limited (429): {e}"}
+            if not fallback_used and model != FALLBACK_MODEL:
+                model = FALLBACK_MODEL
+                fallback_used = True
+                continue
+            return {"error": (
+                f"Anthropic rate-limited (429) on both {MODEL} and {FALLBACK_MODEL}. "
+                f"Likely Claude Code Max quota collision — wait 60s and retry, "
+                f"or paste a paid ANTHROPIC_API_KEY into .env for a separate bucket."
+            )}
         except anthropic.APIError as e:
             return {"error": f"Anthropic API error: {type(e).__name__}: {e}"}
         if resp.stop_reason != "tool_use":

@@ -47,7 +47,8 @@ class _Stub:
         self._script = list(script)
         self.calls = []
 
-    def __call__(self, api_key=None):
+    def __call__(self, **kw):
+        # Accept any kwargs (api_key, auth_token, default_headers, …)
         return self
 
     @property
@@ -128,16 +129,16 @@ def test_history_threading_preserves_order():
     assert roles == ["user", "assistant", "user"]
 
 
-def test_no_api_key_returns_friendly_error(monkeypatch):
-    """chat() must surface a friendly error when no key is reachable.
-    We block both the env var AND the .env reload path so a real key
-    sitting on disk doesn't accidentally satisfy this test."""
+def test_no_credentials_returns_friendly_error(monkeypatch):
+    """chat() must surface a friendly error when neither API key nor
+    Claude Code OAuth token is reachable. We block: env, .env file,
+    and keychain."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    # Stub load_dotenv to a no-op so the on-disk .env can't sneak in
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **kw: False)
+    monkeypatch.setattr(chat, "_get_claude_code_oauth_token", lambda: None)
     out = chat.chat("hi")
     assert "error" in out
-    assert "ANTHROPIC_API_KEY" in out["error"] or "Set ANTHROPIC_API_KEY" in out["error"]
+    assert "credentials" in out["error"].lower() or "ANTHROPIC_API_KEY" in out["error"]
 
 
 def test_max_tool_iters_caps_runaway_loop():
