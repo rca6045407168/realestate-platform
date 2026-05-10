@@ -31,6 +31,7 @@ from . import msa_score, avm as avm_mod, remarks as remarks_mod
 from . import underwriting as uw_mod
 from . import recommendation as rec_mod
 from . import stress as stress_mod
+from . import buybox as buybox_mod
 from . import property_ingest as ingest_mod
 from . import listings_search as listings_mod
 from . import projection as proj_mod
@@ -144,6 +145,7 @@ class IngestRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = Field(default_factory=list)
+    pipeline_summary: list[dict] = Field(default_factory=list)
 
 
 class StressRequest(BaseModel):
@@ -293,6 +295,43 @@ def _underwrite_core(req: UnderwriteRequest) -> dict:
 @app.post("/api/underwritings")
 def underwrite(req: UnderwriteRequest) -> UnderwriteResponse:
     return UnderwriteResponse(**_underwrite_core(req))
+
+
+@app.get("/api/zips/{zip_code}/arv")
+def zip_arv(zip_code: str):
+    """Trend-based ARV across multiple horizons. Comp-based ARV is on the
+    roadmap (blocked on this network — see buybox.py)."""
+    con = connect()
+    out = buybox_mod.arv_estimate(con, zip_code)
+    if not out:
+        raise HTTPException(404, f"No ZHVI data for zip {zip_code}")
+    return _sanitize(out)
+
+
+@app.get("/api/zips/{zip_code}/buybox")
+def zip_buybox(zip_code: str):
+    """Per-zip buy-box: target price/rent/rehab/ARV bands + a 'typical_deal'
+    payload you can POST straight to /api/stress to underwrite the median
+    property for that zip."""
+    con = connect()
+    # Look up the archetype for the zip's MSA, if we can
+    archetype_hint = None
+    try:
+        scored = _scored_msas()
+        if not scored.empty:
+            # We don't know the zip→cbsa link without deriving the buy box,
+            # so derive once with no hint, then pass back through if needed.
+            tmp = buybox_mod.derive(con, zip_code)
+            if tmp and tmp.cbsa_code is not None:
+                m = scored[scored["cbsa_code"].astype(str) == str(tmp.cbsa_code)]
+                if not m.empty:
+                    archetype_hint = m.iloc[0].get("archetype")
+    except Exception:
+        archetype_hint = None
+    b = buybox_mod.derive(con, zip_code, archetype_hint=archetype_hint)
+    if not b:
+        raise HTTPException(404, f"No ZHVI/ZORI data for zip {zip_code}")
+    return _sanitize(buybox_mod.to_dict(b))
 
 
 @app.post("/api/stress")
@@ -683,7 +722,8 @@ def chat_endpoint(req: ChatRequest):
     Specific lookups (one zip, one underwriting) trigger tool calls.
     """
     try:
-        out = chat_mod.chat(req.message, history=req.history)
+        out = chat_mod.chat(req.message, history=req.history,
+                        pipeline_summary=req.pipeline_summary)
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
     return _sanitize(out)

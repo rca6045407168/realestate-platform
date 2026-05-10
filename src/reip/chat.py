@@ -182,6 +182,24 @@ TOOLS = [
         },
     },
     {
+        "name": "buy_box",
+        "description": (
+            "Derive a buy-box for a specific US zip code: target price band (80%–110% "
+            "of ZHVI), target rent band (90%–110% of ZORI), light/heavy rehab bands, "
+            "trend-projected ARV, target cap rate, regime context, and a 'typical_deal' "
+            "object you can immediately stress-test. Use when the user asks 'what should "
+            "I be paying in <zip>', 'what's my buy box for <zip>', 'what's a typical deal "
+            "in <zip>', or before recommending live listings in a zip."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "zip": {"type": "string", "description": "5-digit US zip code"},
+            },
+            "required": ["zip"],
+        },
+    },
+    {
         "name": "stress_test",
         "description": (
             "Multi-scenario underwriter. Runs base / stress / worst-case on a deal "
@@ -313,6 +331,13 @@ def _execute(name: str, args: dict) -> Any:
         ).df()
         return rows.to_dict("records")
 
+    if name == "buy_box":
+        from . import buybox as buybox_mod
+        b = buybox_mod.derive(con, args["zip"])
+        if not b:
+            return {"error": f"No ZHVI/ZORI data for zip {args['zip']}"}
+        return buybox_mod.to_dict(b)
+
     if name == "stress_test":
         from . import stress as stress_mod
         a = underwriting.Assumptions(
@@ -430,8 +455,39 @@ You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, a
 # Chat orchestrator
 # ---------------------------------------------------------------------------
 
+def _format_pipeline_block(deals: list[dict]) -> str:
+    """Render a client-supplied pipeline list into a system-prompt block.
+
+    Inputs each look like:
+      {label, status, verdict, purchase_price, monthly_rent, state,
+       price_to_green, base_irr, worst_irr, notes}
+    """
+    if not deals:
+        return ""
+    lines = ["\n## Your saved deals (from the user's pipeline — they may ask follow-ups about any):"]
+    for d in deals[:12]:                 # cap to keep token usage bounded
+        bits = [f"  - **{d.get('label','?')}** [{d.get('status','?')}] verdict={d.get('verdict','?')}"]
+        if d.get("purchase_price"):
+            bits.append(f"price=${int(d['purchase_price']):,}")
+        if d.get("monthly_rent"):
+            bits.append(f"rent=${int(d['monthly_rent']):,}/mo")
+        if d.get("state"):
+            bits.append(f"state={d['state']}")
+        if d.get("base_irr") is not None:
+            bits.append(f"baseIRR={d['base_irr']*100:+.1f}%")
+        if d.get("worst_irr") is not None:
+            bits.append(f"worstIRR={d['worst_irr']*100:+.1f}%")
+        if d.get("price_to_green"):
+            bits.append(f"walk-away=${int(d['price_to_green']):,}")
+        lines.append(" ".join(bits))
+        if d.get("notes"):
+            lines.append(f"      notes: {d['notes'][:200]}")
+    return "\n".join(lines)
+
+
 def chat(user_message: str, history: list[dict] | None = None,
-         max_tool_iters: int = 5) -> dict:
+         max_tool_iters: int = 5,
+         pipeline_summary: list[dict] | None = None) -> dict:
     """Run one chat turn. Returns {reply, tool_calls, error}.
 
     `history` is a list of {role: 'user'|'assistant', content: str}.
@@ -481,7 +537,8 @@ def chat(user_message: str, history: list[dict] | None = None,
             "macOS keychain under 'Claude Code-credentials')."
         )}
     context = _build_context()
-    system = SYSTEM_PROMPT + "\n\n" + context
+    pipeline_block = _format_pipeline_block(pipeline_summary or [])
+    system = SYSTEM_PROMPT + "\n\n" + context + ("\n" + pipeline_block if pipeline_block else "")
 
     messages: list[dict] = []
     for h in (history or []):

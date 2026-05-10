@@ -256,9 +256,12 @@ async function sendAsk() {
   try {
     // Send all prior messages as history (not the one we just appended)
     const history = conv.messages.slice(0, -1).map(m => ({ role: m.role, content: m.content }));
+    // Build a compact pipeline summary so chat is deal-aware. Keep the
+    // payload small — just enough for the model to reference saved deals.
+    const pipeline_summary = buildPipelineSummary();
     const r = await api('/chat', {
       method: 'POST',
-      body: JSON.stringify({ message: msg, history }),
+      body: JSON.stringify({ message: msg, history, pipeline_summary }),
     });
     pending.remove();
     if (r.error) {
@@ -895,7 +898,7 @@ async function loadTopZips() {
     // Whole row opens Redfin search for that ZIP in a new tab. Browse
     // column links retained for explicit Zillow choice; the inner <a>s
     // get a stopPropagation handler so they don't double-open.
-    html += `<tr onclick="window.open('${z.redfin_search_url}', '_blank')" style="cursor: pointer" title="Click to see actual listings in ZIP ${z.zip} on Redfin">
+    html += `<tr onclick="openZipBuyBox('${z.zip}', '${(z.redfin_search_url||'').replace(/'/g, '%27')}', '${(z.zillow_search_url||'').replace(/'/g, '%27')}')" style="cursor: pointer" title="Click for buy box + one-click stress test on ZIP ${z.zip}">
       <td class="text-muted">${i+1}</td>
       <td class="num text-accent font-semibold">${z.zip}</td>
       <td>${z.state || '—'}</td>
@@ -980,6 +983,120 @@ async function ingestLink() {
   `;
 }
 
+// ---- Buy box (per-zip target bands + one-click stress) ------------------
+
+let LAST_BUYBOX = null;
+
+async function openZipBuyBox(zip, redfinUrl, zillowUrl) {
+  document.getElementById('buyboxModal').classList.remove('hidden');
+  document.getElementById('buyboxTitle').textContent = `ZIP ${zip}`;
+  document.getElementById('buyboxSubtitle').textContent = '';
+  document.getElementById('buyboxBody').innerHTML = spinnerHTML('Deriving buy box…');
+  document.getElementById('buyboxRedfin').href = redfinUrl || `https://www.redfin.com/zipcode/${zip}/filter/property-type=house`;
+  document.getElementById('buyboxZillow').href = zillowUrl || `https://www.zillow.com/homes/${zip}_rb/`;
+  try {
+    const r = await fetch(`/api/zips/${encodeURIComponent(zip)}/buybox`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const b = await r.json();
+    LAST_BUYBOX = b;
+    document.getElementById('buyboxTitle').textContent = `ZIP ${b.zip} — ${b.cbsa_name || 'Unmapped'}`;
+    document.getElementById('buyboxSubtitle').textContent =
+      `${b.state || '—'}  ·  Regime: ${b.regime_label} (${(b.regime_score*100).toFixed(1)}%)  ·  ${b.archetype_hint || 'Mixed'}`;
+    document.getElementById('buyboxBody').innerHTML = renderBuyBox(b);
+  } catch (e) {
+    document.getElementById('buyboxBody').innerHTML = `<div class="text-red">Failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderBuyBox(b) {
+  const fmtMoney = (x) => '$' + (x || 0).toLocaleString();
+  const regimeBadge = ({
+    expanding: 'bg-green/10 text-green border-green',
+    mixed:     'bg-bg text-muted border-line',
+    contracting: 'bg-yellow/10 text-yellow border-yellow',
+    crash:     'bg-red/10 text-red border-red',
+  })[b.regime_label] || 'border-line text-muted';
+  return `
+    <div class="grid grid-cols-3 gap-3">
+      <div class="bg-bg rounded border border-line p-3">
+        <div class="text-xs uppercase tracking-wide text-muted">Target price</div>
+        <div class="text-fg font-medium text-base mt-1">${fmtMoney(b.target_price_low)} – ${fmtMoney(b.target_price_high)}</div>
+        <div class="text-xs text-muted mt-1">mid: ${fmtMoney(b.target_price_mid)} (ZHVI)</div>
+      </div>
+      <div class="bg-bg rounded border border-line p-3">
+        <div class="text-xs uppercase tracking-wide text-muted">Target rent</div>
+        <div class="text-fg font-medium text-base mt-1">${fmtMoney(b.target_rent_low)} – ${fmtMoney(b.target_rent_high)}/mo</div>
+        <div class="text-xs text-muted mt-1">mid: ${fmtMoney(b.target_rent_mid)} (ZORI)</div>
+      </div>
+      <div class="bg-bg rounded border border-line p-3">
+        <div class="text-xs uppercase tracking-wide text-muted">Rehab band</div>
+        <div class="text-fg font-medium text-base mt-1">${fmtMoney(b.target_rehab_light)} – ${fmtMoney(b.target_rehab_heavy)}</div>
+        <div class="text-xs text-muted mt-1">cosmetic → value-add BRRRR</div>
+      </div>
+      <div class="bg-bg rounded border border-line p-3">
+        <div class="text-xs uppercase tracking-wide text-muted">ARV (12mo)</div>
+        <div class="text-fg font-medium text-base mt-1">${fmtMoney(b.arv_trend_12mo)}</div>
+        <div class="text-xs text-muted mt-1">today: ${fmtMoney(b.arv_now)}</div>
+      </div>
+      <div class="bg-bg rounded border border-line p-3">
+        <div class="text-xs uppercase tracking-wide text-muted">Target cap rate</div>
+        <div class="text-fg font-medium text-base mt-1">≥ ${(b.target_cap_rate*100).toFixed(1)}%</div>
+        <div class="text-xs text-muted mt-1">floor: ${(b.floor_cap_rate*100).toFixed(1)}%</div>
+      </div>
+      <div class="bg-bg rounded border border-line p-3">
+        <div class="text-xs uppercase tracking-wide text-muted">County vacancy</div>
+        <div class="text-fg font-medium text-base mt-1">${(b.vacancy_used*100).toFixed(1)}%</div>
+        <div class="text-xs text-muted mt-1">stress goes higher</div>
+      </div>
+    </div>
+    <div class="bg-bg rounded border border-line p-3 text-xs text-muted">
+      <span class="uppercase tracking-wide">ARV method:</span> ${escapeHtml(b.arv_method)}
+    </div>
+    ${b.notes && b.notes.length ? `
+    <div class="bg-bg rounded border border-line p-3">
+      <div class="text-xs uppercase tracking-wide text-muted mb-2">Notes</div>
+      <ul class="list-disc pl-5 space-y-1 text-sm">
+        ${b.notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}
+      </ul>
+    </div>` : ''}
+  `;
+}
+
+function closeBuyBox() {
+  document.getElementById('buyboxModal').classList.add('hidden');
+  LAST_BUYBOX = null;
+}
+
+function stressFromBuyBox() {
+  if (!LAST_BUYBOX) return;
+  const d = LAST_BUYBOX.typical_deal;
+  // Switch to Stress tab and fill inputs
+  go('stress');
+  closeBuyBox();
+  // Small defer so the screen is visible before we set values
+  setTimeout(() => {
+    $('stPrice').value = d.purchase_price;
+    $('stRent').value  = d.monthly_rent;
+    $('stRehab').value = d.rehab_cost;
+    $('stRate').value  = d.mortgage_rate;
+    $('stLtv').value   = d.ltv;
+    $('stVac').value   = d.vacancy;
+    $('stIns').value   = d.insurance_annual;
+    $('stTax').value   = d.property_tax_rate;
+    $('stHoa').value   = 0;
+    $('stARV').value   = LAST_BUYBOX.arv_trend_12mo || '';
+    if (d.state) {
+      const sel = $('stState');
+      if ([...sel.options].some(o => o.value === d.state)) sel.value = d.state;
+    }
+    runStress();   // auto-fire
+  }, 50);
+}
+
+window.openZipBuyBox = openZipBuyBox;
+window.closeBuyBox = closeBuyBox;
+window.stressFromBuyBox = stressFromBuyBox;
+
 // ---- Deal pipeline ------------------------------------------------------
 //
 // localStorage `reip_deals_v1`. Every deal carries inputs (so we can re-run
@@ -1032,6 +1149,23 @@ function newDealFromStress(inputs, stressResult, opts = {}) {
   DEALS.unshift(deal);
   persistDeals();
   return deal;
+}
+
+function buildPipelineSummary() {
+  // Map full deal objects to the compact shape chat.py reads. Limit to the
+  // 12 most-recently-updated to keep the payload small.
+  return DEALS.slice(0, 12).map(d => ({
+    label:           d.label,
+    status:          d.status,
+    verdict:         d.stress?.gate?.verdict,
+    purchase_price:  d.inputs?.purchase_price,
+    monthly_rent:    d.inputs?.monthly_rent,
+    state:           d.inputs?.state,
+    base_irr:        d.stress?.scenarios?.[0]?.irr,
+    worst_irr:       d.stress?.scenarios?.[2]?.irr,
+    price_to_green:  d.stress?.price_to_green,
+    notes:           d.notes,
+  }));
 }
 
 function _defaultDealLabel(inputs) {
@@ -1473,13 +1607,19 @@ function initPipelineHandlers() {
   document.getElementById('pipeCompareModal')?.addEventListener('click', (e) => {
     if (e.target.id === 'pipeCompareModal') closePipeCompare();
   });
-  // Esc closes either modal
+  // Esc closes whatever modal is open
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (!document.getElementById('pipeDetailModal').classList.contains('hidden')) closePipeDetail();
       else if (!document.getElementById('pipeCompareModal').classList.contains('hidden')) closePipeCompare();
+      else if (!document.getElementById('buyboxModal').classList.contains('hidden')) closeBuyBox();
     }
   });
+  // Buy-box modal: backdrop-click to close + "Stress-test typical deal"
+  document.getElementById('buyboxModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'buyboxModal') closeBuyBox();
+  });
+  document.getElementById('buyboxRunStress')?.addEventListener('click', stressFromBuyBox);
 }
 
 // Boot
