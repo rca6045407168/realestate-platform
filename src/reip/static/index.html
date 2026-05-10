@@ -60,6 +60,7 @@
       <button onclick="go('underwrite')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Underwrite</button>
       <button onclick="go('avm')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">AVM signal</button>
       <button onclick="go('remarks')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Remarks parser</button>
+      <button onclick="go('ask')" class="navlink px-3 py-1.5 rounded bg-card border border-accent text-accent hover:bg-accent hover:text-bg">Ask reip</button>
     </nav>
   </header>
 
@@ -231,6 +232,28 @@
         class="w-full bg-card border border-line rounded p-3 text-sm font-mono"></textarea>
       <button id="remarksRun" class="mt-3 px-4 py-2 rounded bg-accent text-bg font-medium">Parse</button>
       <div id="remarksOut" class="mt-4"></div>
+    </div>
+  </section>
+
+  <!-- ============== ASK REIP (chat) ============== -->
+  <section id="screen-ask" class="screen hidden">
+    <div class="max-w-3xl">
+      <div class="text-xs text-muted mb-3">
+        Conversational research over the full REIP dataset. The system prompt is pre-loaded with current
+        top markets and the 11 verified live-listing metros (latent-RAG spirit: minimize agentic loops).
+        For specific lookups (one zip, one underwriting), the agent calls the underlying REIP tools.
+        Requires <code>ANTHROPIC_API_KEY</code> in the server env.
+      </div>
+      <div id="askThread" class="bg-card border border-line rounded p-4 mb-3 min-h-[400px] max-h-[60vh] overflow-y-auto space-y-3 text-sm"></div>
+      <div class="flex gap-2">
+        <input id="askInput" type="text" placeholder="e.g. 'best Memphis zips that are still expanding' or 'underwrite a $200k Cleveland duplex at 7%'"
+          class="flex-1 bg-bg border border-line rounded px-3 py-2 text-sm" />
+        <button id="askSend" class="px-4 py-2 rounded bg-accent text-bg font-medium hover:opacity-90">Send</button>
+      </div>
+      <div class="mt-2 text-xs text-muted">
+        Try: "what are the top 5 expanding markets right now?" · "show me Cleveland properties under 100k" ·
+        "compare Memphis vs Indianapolis for cashflow" · "underwrite a $180k Indy 3bed at 7.25%"
+      </div>
     </div>
   </section>
 

@@ -35,6 +35,7 @@ from . import listings_search as listings_mod
 from . import projection as proj_mod
 from . import decision as decision_mod
 from . import zip_returns as zip_returns_mod
+from . import chat as chat_mod
 
 app = FastAPI(title="reip", version="0.4.0",
               description="Real estate investment platform — deal-screening + underwriting")
@@ -137,6 +138,11 @@ class RemarksRequest(BaseModel):
 
 class IngestRequest(BaseModel):
     url: str = Field(..., description="Redfin / Zillow / Realtor.com listing URL")
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[dict] = Field(default_factory=list)
 
 
 # ---- routes -----------------------------------------------------------------
@@ -627,6 +633,22 @@ def ingest_property(req: IngestRequest):
             out["rent_source"] = "ZORI fallback"
             out["extracted_via"] = list(out["extracted_via"]) + ["zori:zip"]
     return out
+
+
+@app.post("/api/chat")
+def chat_endpoint(req: ChatRequest):
+    """Single-turn agent over REIP tools. Requires ANTHROPIC_API_KEY.
+
+    Latent-RAG spirit: the system prompt is pre-loaded with the current
+    top-10 MSAs, top-10 zips, and the 11 verified live-listing markets,
+    so most questions are answered in one Claude call with zero tool use.
+    Specific lookups (one zip, one underwriting) trigger tool calls.
+    """
+    try:
+        out = chat_mod.chat(req.message, history=req.history)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    return _sanitize(out)
 
 
 @app.get("/api/coverage-map")

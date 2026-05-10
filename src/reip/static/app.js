@@ -40,8 +40,83 @@ function go(name) {
   if (name === 'avm')       loadAvm();
   if (name === 'buy')       loadBuy();
   if (name === 'topzips')   loadTopZips();
+  if (name === 'ask')       focusAskInput();
 }
 window.go = go;
+
+// ---- Ask reip (chat) ----------------------------------------------------
+
+const ASK_HISTORY = [];
+
+function focusAskInput() {
+  const el = document.getElementById('askInput');
+  if (el) setTimeout(() => el.focus(), 50);
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderAskMessage(role, text, toolCalls) {
+  const thread = document.getElementById('askThread');
+  if (!thread) return;
+  const div = document.createElement('div');
+  if (role === 'user') {
+    div.className = 'flex justify-end';
+    div.innerHTML = `<div class="bg-accent text-bg rounded-lg px-3 py-2 max-w-[80%] whitespace-pre-wrap">${escapeHtml(text)}</div>`;
+  } else if (role === 'assistant') {
+    div.className = 'flex flex-col gap-1';
+    let toolsLine = '';
+    if (toolCalls && toolCalls.length) {
+      toolsLine = `<div class="text-xs text-muted">${toolCalls.length} tool call${toolCalls.length>1?'s':''}: ${toolCalls.map(t => t.name).join(', ')}</div>`;
+    }
+    div.innerHTML = `${toolsLine}<div class="bg-card border border-line rounded-lg px-3 py-2 max-w-[95%] whitespace-pre-wrap">${escapeHtml(text)}</div>`;
+  } else {
+    div.className = 'flex justify-center';
+    div.innerHTML = `<div class="text-xs text-yellow">${escapeHtml(text)}</div>`;
+  }
+  thread.appendChild(div);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+async function sendAsk() {
+  const input = document.getElementById('askInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  renderAskMessage('user', msg);
+  ASK_HISTORY.push({ role: 'user', content: msg });
+  const thread = document.getElementById('askThread');
+  const pending = document.createElement('div');
+  pending.className = 'flex items-center gap-2 text-muted text-xs';
+  pending.innerHTML = `<div class="spinner" style="width:14px;height:14px;border-width:2px;"></div>thinking…`;
+  thread.appendChild(pending);
+  thread.scrollTop = thread.scrollHeight;
+  try {
+    const r = await api('/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message: msg, history: ASK_HISTORY.slice(0, -1) }),
+    });
+    pending.remove();
+    if (r.error) { renderAskMessage('system', r.error); return; }
+    const reply = r.reply || '(empty reply)';
+    renderAskMessage('assistant', reply, r.tool_calls || []);
+    ASK_HISTORY.push({ role: 'assistant', content: reply });
+  } catch (e) {
+    pending.remove();
+    renderAskMessage('system', `Error: ${e.message}`);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('askSend');
+  const inp = document.getElementById('askInput');
+  if (btn) btn.addEventListener('click', sendAsk);
+  if (inp) inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAsk(); }
+  });
+});
 
 // ---- DASHBOARD -----------------------------------------------------------
 
