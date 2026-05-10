@@ -181,6 +181,35 @@ TOOLS = [
             "required": ["text"],
         },
     },
+    {
+        "name": "stress_test",
+        "description": (
+            "Multi-scenario underwriter. Runs base / stress / worst-case on a deal "
+            "with state-aware overlays (FL hurricane-insurance, TX high property tax, "
+            "CA rent-cap drag, rust-belt rehab overrun). Returns each scenario's IRR, "
+            "CoC, DSCR, break-even occupancy + a GREEN/YELLOW/RED gate with concrete "
+            "mitigations + `price_to_green` (the price ceiling that lifts the deal to "
+            "GREEN). Use whenever the user asks 'is this deal good', 'underwrite this', "
+            "'what could go wrong', or pastes a listing with numbers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "purchase_price":     {"type": "number"},
+                "monthly_rent":       {"type": "number"},
+                "rehab_cost":         {"type": "number", "default": 0},
+                "arv":                {"type": "number"},
+                "mortgage_rate":      {"type": "number", "default": 0.07},
+                "ltv":                {"type": "number", "default": 0.75},
+                "vacancy":            {"type": "number", "default": 0.05},
+                "property_tax_rate":  {"type": "number", "default": 0.012},
+                "insurance_annual":   {"type": "number", "default": 1500},
+                "hoa_monthly":        {"type": "number", "default": 0},
+                "state":              {"type": "string", "description": "2-letter state code — drives state overlay (FL/TX/CA/OH/MI/...)"},
+            },
+            "required": ["purchase_price", "monthly_rent"],
+        },
+    },
 ]
 
 
@@ -283,6 +312,22 @@ def _execute(name: str, args: dict) -> Any:
             [args.get("direction", "cold"), args.get("limit", 10)],
         ).df()
         return rows.to_dict("records")
+
+    if name == "stress_test":
+        from . import stress as stress_mod
+        a = underwriting.Assumptions(
+            purchase_price=args["purchase_price"],
+            rehab_cost=args.get("rehab_cost", 0),
+            arv=args.get("arv"),
+            monthly_rent=args["monthly_rent"],
+            mortgage_rate=args.get("mortgage_rate", 0.07),
+            ltv=args.get("ltv", 0.75),
+            vacancy=args.get("vacancy", 0.05),
+            property_tax_rate=args.get("property_tax_rate", 0.012),
+            insurance_annual=args.get("insurance_annual", 1500.0),
+            hoa_monthly=args.get("hoa_monthly", 0.0),
+        )
+        return stress_mod.stress_test(a, state=args.get("state"))
 
     if name == "parse_remarks":
         s = remarks_mod.parse(args["text"])

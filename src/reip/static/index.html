@@ -98,6 +98,7 @@
       <button onclick="go('buy')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Buy ideas</button>
       <button onclick="go('topzips')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Top zips (US)</button>
       <button onclick="go('underwrite')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Underwrite</button>
+      <button onclick="go('stress')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Stress test</button>
       <button onclick="go('avm')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">AVM signal</button>
       <button onclick="go('remarks')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Remarks parser</button>
       <button onclick="go('ask')" class="navlink px-3 py-1.5 rounded bg-card border border-accent text-accent hover:bg-accent hover:text-bg">Ask reip</button>
@@ -245,6 +246,99 @@
         </button>
       </div>
       <div id="uwResultHost" class="space-y-4"></div>
+    </div>
+  </section>
+
+  <!-- ============== STRESS TEST ============== -->
+  <section id="screen-stress" class="screen hidden">
+    <div class="text-xs text-muted mb-3 max-w-3xl">
+      Multi-scenario underwriter. <b>Base</b> runs your inputs after state overlay (FL hurricane premium, TX
+      property-tax shock, CA rent-cap drag, rust-belt rehab overrun). <b>Stress</b> layers realistic adverse
+      conditions: rent −10%, vacancy +3pp, rate +100bps, insurance +20%, rehab +20%. <b>Worst</b> layers
+      90th-percentile-bad: rent −15%, vacancy +7pp, rate +200bps, insurance +40%, rehab +35%, exit cap +100bps.
+      Gate: GREEN survives worst-case. YELLOW survives stress. RED breaks. <b>price_to_green</b> is the
+      ceiling you'd have to negotiate to before the deal upgrades to GREEN — your walk-away number.
+    </div>
+
+    <div class="grid lg:grid-cols-2 gap-6 max-w-[1400px]">
+      <div class="bg-card rounded border border-line p-5">
+        <div class="text-xs uppercase tracking-wide text-muted mb-3">Deal inputs</div>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <label class="block">
+            <span class="text-muted text-xs">Purchase price ($)</span>
+            <input id="stPrice" type="number" value="120000" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">Monthly rent ($)</span>
+            <input id="stRent" type="number" value="1500" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">Rehab cost ($)</span>
+            <input id="stRehab" type="number" value="15000" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">ARV ($, optional)</span>
+            <input id="stARV" type="number" placeholder="for BRRRR" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">Mortgage rate</span>
+            <input id="stRate" type="number" step="0.001" value="0.07" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">LTV</span>
+            <input id="stLtv" type="number" step="0.05" value="0.75" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">Vacancy</span>
+            <input id="stVac" type="number" step="0.01" value="0.05" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">Insurance / yr ($)</span>
+            <input id="stIns" type="number" value="1500" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">Property tax rate</span>
+            <input id="stTax" type="number" step="0.001" value="0.012" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">HOA / mo ($)</span>
+            <input id="stHoa" type="number" value="0" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+          </label>
+          <label class="block col-span-2">
+            <span class="text-muted text-xs">State (drives overlay)</span>
+            <select id="stState" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+              <option value="">— none —</option>
+              <option value="FL">FL — Florida (+50% insurance, exit-cap drag)</option>
+              <option value="TX">TX — Texas (+1.5pp property tax, +20% insurance)</option>
+              <option value="CA">CA — California (rent-cap drag, low cap rates)</option>
+              <option value="AZ">AZ — Arizona (+25% insurance)</option>
+              <option value="NV">NV — Nevada (+25% insurance)</option>
+              <option value="CO">CO — Colorado (+30% insurance, wildfire)</option>
+              <option value="LA">LA — Louisiana (+40% insurance, gulf)</option>
+              <option value="MS">MS — Mississippi (+40% insurance, gulf)</option>
+              <option value="AL">AL — Alabama (+40% insurance, gulf)</option>
+              <option value="OH">OH — Ohio (rust-belt: +30% rehab, +2pp vacancy)</option>
+              <option value="MI">MI — Michigan (rust-belt)</option>
+              <option value="IN">IN — Indiana (rust-belt)</option>
+              <option value="IL">IL — Illinois (rust-belt)</option>
+              <option value="PA">PA — Pennsylvania (rust-belt)</option>
+              <option value="WV">WV — West Virginia (rust-belt)</option>
+              <option value="MO">MO — Missouri (rust-belt — KC/STL)</option>
+            </select>
+          </label>
+        </div>
+        <button id="stRun" class="mt-4 w-full px-4 py-2 rounded bg-accent text-bg font-medium hover:opacity-90">
+          Run stress test
+        </button>
+      </div>
+
+      <div id="stResultHost" class="space-y-4">
+        <div class="text-muted text-sm p-4">
+          Press <b class="text-accent">Run stress test</b> to see how this deal performs under
+          base / stress / worst-case conditions, and the price you'd need to negotiate to before it
+          upgrades to GREEN.
+        </div>
+      </div>
     </div>
   </section>
 

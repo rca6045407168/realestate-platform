@@ -40,6 +40,7 @@ function go(name) {
   if (name === 'avm')       loadAvm();
   if (name === 'buy')       loadBuy();
   if (name === 'topzips')   loadTopZips();
+  if (name === 'stress')    initStress();
   if (name === 'ask')       focusAskInput();
 }
 window.go = go;
@@ -976,6 +977,173 @@ async function ingestLink() {
     <div class="text-green mt-1">Prefilled ${prefilled.length} field(s): ${prefilled.join(', ') || '(none)'} — review and run.</div>
     ${warn}
   `;
+}
+
+// ---- Stress test --------------------------------------------------------
+
+let STRESS_BOUND = false;
+function initStress() {
+  if (STRESS_BOUND) return;
+  STRESS_BOUND = true;
+  $('stRun').addEventListener('click', runStress);
+}
+
+async function runStress() {
+  const body = {
+    purchase_price: +$('stPrice').value,
+    monthly_rent:   +$('stRent').value,
+    rehab_cost:     +$('stRehab').value || 0,
+    arv:            $('stARV').value ? +$('stARV').value : null,
+    mortgage_rate:  +$('stRate').value,
+    ltv:            +$('stLtv').value,
+    vacancy:        +$('stVac').value,
+    insurance_annual: +$('stIns').value,
+    property_tax_rate: +$('stTax').value,
+    hoa_monthly:    +$('stHoa').value || 0,
+    state:          $('stState').value || null,
+  };
+  const host = $('stResultHost');
+  host.innerHTML = spinnerHTML('Running base / stress / worst scenarios + price-to-green search…');
+  try {
+    const r = await fetch('/api/stress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    host.innerHTML = renderStressResult(data);
+  } catch (e) {
+    host.innerHTML = `<div class="bg-card border border-red rounded p-4 text-red text-sm">Error: ${e.message}</div>`;
+  }
+}
+
+function renderStressResult(d) {
+  const verdict = d.gate.verdict;
+  const verdictColor = { GREEN: 'text-green border-green', YELLOW: 'text-yellow border-yellow', RED: 'text-red border-red' }[verdict] || 'text-fg border-line';
+  const overlayLine = d.state_overlay_summary
+    ? `<div class="text-xs text-muted mt-1">Overlay: <span class="text-fg">${d.state_overlay_summary}</span></div>`
+    : (d.state ? `<div class="text-xs text-muted mt-1">No state overlay for ${d.state}.</div>` : '');
+
+  const scenRows = d.scenarios.map(s => {
+    const deltaChips = Object.entries(s.deltas || {}).map(([k, v]) => {
+      const label = ({
+        rent_pct: `rent ${(v * 100).toFixed(0)}%`,
+        vacancy_pp: `vac ${v >= 0 ? '+' : ''}${(v * 100).toFixed(0)}pp`,
+        rate_bps: `rate ${v >= 0 ? '+' : ''}${v}bps`,
+        insurance_pct: `ins ${v >= 0 ? '+' : ''}${(v * 100).toFixed(0)}%`,
+        rehab_pct: `rehab ${v >= 0 ? '+' : ''}${(v * 100).toFixed(0)}%`,
+        exit_cap_bps: `exit-cap ${v >= 0 ? '+' : ''}${v}bps`,
+        tax_rate_pp: `tax ${v >= 0 ? '+' : ''}${v.toFixed(2)}pp`,
+      })[k] || `${k}=${v}`;
+      return `<span class="text-xs bg-bg border border-line rounded px-1.5 py-0.5 mr-1">${label}</span>`;
+    }).join('');
+    const irrCell = fmtPct(s.irr);
+    const cocCell = fmtPct(s.cash_on_cash);
+    const dscrCell = s.dscr != null ? s.dscr.toFixed(2) : '—';
+    const bep = s.break_even_occupancy;
+    const bepCell = bep == null || Number.isNaN(bep) ? '—'
+      : bep > 1 ? `<span class="text-red">>100% (cannot CF)</span>`
+      : `${(bep * 100).toFixed(0)}%`;
+    return `
+      <tr class="border-b border-line">
+        <td class="py-2 pr-3 font-medium">${s.label}</td>
+        <td class="py-2 pr-3 ${irrColor(s.irr)} text-right tabular-nums">${irrCell}</td>
+        <td class="py-2 pr-3 ${cocColor(s.cash_on_cash)} text-right tabular-nums">${cocCell}</td>
+        <td class="py-2 pr-3 ${dscrColor(s.dscr)} text-right tabular-nums">${dscrCell}</td>
+        <td class="py-2 pr-3 text-right tabular-nums">${bepCell}</td>
+        <td class="py-2 text-xs text-muted">${deltaChips || '—'}</td>
+      </tr>`;
+  }).join('');
+
+  const reasonsList = d.gate.reasons.length
+    ? `<ul class="text-sm list-disc pl-5 space-y-1">${d.gate.reasons.map(r => `<li>${r}</li>`).join('')}</ul>`
+    : `<div class="text-sm text-muted">No threshold violations.</div>`;
+  const mitigationsList = d.gate.mitigations.length
+    ? `<ul class="text-sm list-disc pl-5 space-y-1">${d.gate.mitigations.map(m => `<li>${m}</li>`).join('')}</ul>`
+    : '';
+
+  const priceLine = d.price_to_green != null
+    ? `<div class="bg-card border border-accent rounded p-4">
+         <div class="text-xs uppercase tracking-wide text-muted mb-1">Walk-away price</div>
+         <div class="text-2xl font-bold text-accent">$${d.price_to_green.toLocaleString()}</div>
+         <div class="text-xs text-muted mt-1">Asking price that flips this deal to GREEN at current rent + rate.</div>
+       </div>`
+    : (verdict !== 'GREEN'
+       ? `<div class="bg-card border border-red rounded p-4 text-sm text-red">
+            No price between 30% and 100% of ask makes this GREEN. Rent / cost structure is broken; walk.
+          </div>`
+       : '');
+
+  return `
+    <div class="bg-card rounded border ${verdictColor.split(' ')[1]} p-5">
+      <div class="flex items-baseline justify-between">
+        <div>
+          <div class="text-xs uppercase tracking-wide text-muted">Verdict</div>
+          <div class="text-3xl font-bold ${verdictColor.split(' ')[0]}">${verdict}</div>
+        </div>
+        <div class="text-xs text-muted text-right">
+          State: <span class="text-fg">${d.state || '—'}</span>
+        </div>
+      </div>
+      ${overlayLine}
+    </div>
+
+    <div class="bg-card rounded border border-line p-4 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="text-xs uppercase tracking-wide text-muted">
+          <tr class="border-b border-line">
+            <th class="text-left py-2 pr-3">Scenario</th>
+            <th class="text-right py-2 pr-3">5y IRR</th>
+            <th class="text-right py-2 pr-3">Y1 CoC</th>
+            <th class="text-right py-2 pr-3">DSCR</th>
+            <th class="text-right py-2 pr-3">Break-even occ.</th>
+            <th class="text-left py-2">Deltas vs base</th>
+          </tr>
+        </thead>
+        <tbody>${scenRows}</tbody>
+      </table>
+    </div>
+
+    ${d.gate.reasons.length ? `
+    <div class="bg-card rounded border border-line p-4">
+      <div class="text-xs uppercase tracking-wide text-muted mb-2">Why it didn't clear</div>
+      ${reasonsList}
+    </div>` : ''}
+
+    ${mitigationsList ? `
+    <div class="bg-card rounded border border-line p-4">
+      <div class="text-xs uppercase tracking-wide text-muted mb-2">Mitigations</div>
+      ${mitigationsList}
+    </div>` : ''}
+
+    ${priceLine}
+  `;
+}
+
+function fmtPct(x) {
+  if (x == null || Number.isNaN(x)) return '—';
+  if (x <= -0.99) return '< -99%';
+  return (x * 100).toFixed(1) + '%';
+}
+function irrColor(x) {
+  if (x == null) return '';
+  if (x >= 0.10) return 'text-green';
+  if (x >= 0) return 'text-fg';
+  if (x >= -0.05) return 'text-yellow';
+  return 'text-red';
+}
+function cocColor(x) {
+  if (x == null) return '';
+  if (x >= 0.06) return 'text-green';
+  if (x >= 0.03) return 'text-yellow';
+  return 'text-red';
+}
+function dscrColor(x) {
+  if (x == null) return '';
+  if (x >= 1.25) return 'text-green';
+  if (x >= 1.10) return 'text-yellow';
+  return 'text-red';
 }
 
 // Boot

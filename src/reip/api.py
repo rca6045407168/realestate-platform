@@ -30,6 +30,7 @@ from .store import connect
 from . import msa_score, avm as avm_mod, remarks as remarks_mod
 from . import underwriting as uw_mod
 from . import recommendation as rec_mod
+from . import stress as stress_mod
 from . import property_ingest as ingest_mod
 from . import listings_search as listings_mod
 from . import projection as proj_mod
@@ -143,6 +144,22 @@ class IngestRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = Field(default_factory=list)
+
+
+class StressRequest(BaseModel):
+    purchase_price: float
+    monthly_rent: float
+    rehab_cost: float = 0.0
+    arv: Optional[float] = None
+    mortgage_rate: float = 0.07
+    ltv: float = 0.75
+    vacancy: float = 0.05
+    opex_ratio: float = 0.40
+    property_tax_rate: float = 0.012
+    insurance_annual: float = 1500.0
+    hoa_monthly: float = 0.0
+    hold_years: int = 5
+    state: Optional[str] = None
 
 
 # ---- routes -----------------------------------------------------------------
@@ -276,6 +293,27 @@ def _underwrite_core(req: UnderwriteRequest) -> dict:
 @app.post("/api/underwritings")
 def underwrite(req: UnderwriteRequest) -> UnderwriteResponse:
     return UnderwriteResponse(**_underwrite_core(req))
+
+
+@app.post("/api/stress")
+def stress(req: StressRequest):
+    """Multi-scenario stress test on a deal: base / stress / worst with
+    state-aware overlays (FL hurricane, TX tax, CA rent cap, rust-belt rehab).
+
+    Returns scenario-by-scenario IRR, CoC, DSCR, break-even occupancy,
+    a GREEN/YELLOW/RED gate with concrete mitigations, and `price_to_green`
+    (the price ceiling at which the deal upgrades to GREEN — i.e. negotiate
+    target or walk)."""
+    a = uw_mod.Assumptions(
+        purchase_price=req.purchase_price, rehab_cost=req.rehab_cost,
+        arv=req.arv, monthly_rent=req.monthly_rent,
+        vacancy=req.vacancy, opex_ratio=req.opex_ratio,
+        property_tax_rate=req.property_tax_rate,
+        insurance_annual=req.insurance_annual, hoa_monthly=req.hoa_monthly,
+        mortgage_rate=req.mortgage_rate, ltv=req.ltv,
+        hold_years=req.hold_years,
+    )
+    return _sanitize(stress_mod.stress_test(a, state=req.state))
 
 
 @app.post("/api/underwritings/mitigations")
