@@ -99,6 +99,9 @@
       <button onclick="go('topzips')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Top zips (US)</button>
       <button onclick="go('underwrite')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Underwrite</button>
       <button onclick="go('stress')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Stress test</button>
+      <button onclick="go('pipeline')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">
+        Pipeline <span id="pipelineNavCount" class="text-muted"></span>
+      </button>
       <button onclick="go('avm')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">AVM signal</button>
       <button onclick="go('remarks')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Remarks parser</button>
       <button onclick="go('ask')" class="navlink px-3 py-1.5 rounded bg-card border border-accent text-accent hover:bg-accent hover:text-bg">Ask reip</button>
@@ -338,6 +341,71 @@
           base / stress / worst-case conditions, and the price you'd need to negotiate to before it
           upgrades to GREEN.
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============== PIPELINE ============== -->
+  <section id="screen-pipeline" class="screen hidden">
+    <div class="flex items-baseline justify-between mb-4 max-w-[1400px]">
+      <div>
+        <h2 class="text-lg font-semibold text-fg">Deal pipeline</h2>
+        <div class="text-xs text-muted mt-1">Every deal you stress-test, saved locally in this browser. Filter by status, pick up to 3 for side-by-side compare, click any row to re-open.</div>
+      </div>
+      <div class="flex gap-2 text-xs">
+        <button id="pipeCompareBtn" class="px-3 py-1.5 rounded border border-line hover:border-accent disabled:opacity-40 disabled:cursor-not-allowed" disabled>Compare (<span id="pipeCompareCount">0</span>)</button>
+        <button id="pipeClearAll" class="px-3 py-1.5 rounded border border-line hover:border-red text-muted hover:text-red">Clear all</button>
+      </div>
+    </div>
+
+    <div class="flex flex-wrap gap-2 mb-4 text-xs">
+      <button class="pipe-filter px-3 py-1 rounded bg-bg border border-accent text-accent" data-status="all">All</button>
+      <button class="pipe-filter px-3 py-1 rounded bg-bg border border-line text-muted hover:border-fg hover:text-fg" data-status="researching">🔬 Researching</button>
+      <button class="pipe-filter px-3 py-1 rounded bg-bg border border-line text-muted hover:border-fg hover:text-fg" data-status="underwritten">📝 Underwritten</button>
+      <button class="pipe-filter px-3 py-1 rounded bg-bg border border-line text-muted hover:border-fg hover:text-fg" data-status="offer">📞 Offer made</button>
+      <button class="pipe-filter px-3 py-1 rounded bg-bg border border-line text-muted hover:border-fg hover:text-fg" data-status="closed">✅ Closed</button>
+      <button class="pipe-filter px-3 py-1 rounded bg-bg border border-line text-muted hover:border-fg hover:text-fg" data-status="passed">❌ Passed</button>
+    </div>
+
+    <div id="pipelineHost" class="bg-card border border-line rounded overflow-hidden max-w-[1400px]"></div>
+
+    <!-- Detail drawer (hidden by default) -->
+    <div id="pipeDetailModal" class="hidden fixed inset-0 bg-black/70 z-40 flex items-start justify-center pt-16 p-6 overflow-y-auto">
+      <div class="bg-card border border-line rounded-lg max-w-4xl w-full p-5 space-y-4">
+        <div class="flex items-baseline justify-between gap-4">
+          <div class="flex-1 min-w-0">
+            <input id="pipeDetailLabel" type="text" class="w-full bg-bg border border-line rounded px-2 py-1 text-base font-medium" placeholder="Deal label (e.g. 1234 Main St, Cleveland OH)">
+          </div>
+          <button onclick="closePipeDetail()" class="text-muted hover:text-fg text-xl leading-none">×</button>
+        </div>
+        <div class="flex gap-3 text-xs items-center flex-wrap">
+          <label class="text-muted">Status</label>
+          <select id="pipeDetailStatus" class="bg-bg border border-line rounded px-2 py-1">
+            <option value="researching">🔬 Researching</option>
+            <option value="underwritten">📝 Underwritten</option>
+            <option value="offer">📞 Offer made</option>
+            <option value="under_contract">📃 Under contract</option>
+            <option value="closed">✅ Closed</option>
+            <option value="passed">❌ Passed</option>
+          </select>
+          <label class="text-muted">Link</label>
+          <input id="pipeDetailLink" type="url" class="flex-1 min-w-[200px] bg-bg border border-line rounded px-2 py-1 font-mono" placeholder="https://...">
+          <button id="pipeDetailRerun" class="px-3 py-1 rounded bg-accent text-bg font-medium">Re-run stress</button>
+          <button id="pipeDetailDelete" class="px-3 py-1 rounded border border-red text-red hover:bg-red hover:text-bg">Delete</button>
+        </div>
+        <textarea id="pipeDetailNotes" rows="2" class="w-full bg-bg border border-line rounded px-2 py-1 text-sm" placeholder="Notes: called agent 6/12, asking $89K, willing at $82..."></textarea>
+        <div id="pipeDetailStress" class="space-y-3"></div>
+      </div>
+    </div>
+
+    <!-- Compare drawer -->
+    <div id="pipeCompareModal" class="hidden fixed inset-0 bg-black/70 z-40 flex items-start justify-center pt-12 p-6 overflow-y-auto">
+      <div class="bg-card border border-line rounded-lg max-w-[1400px] w-full p-5 space-y-4">
+        <div class="flex items-baseline justify-between">
+          <h3 class="text-lg font-semibold">Side-by-side comparison</h3>
+          <button onclick="closePipeCompare()" class="text-muted hover:text-fg text-xl leading-none">×</button>
+        </div>
+        <div id="pipeCompareHost"></div>
       </div>
     </div>
   </section>

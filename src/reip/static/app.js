@@ -41,6 +41,7 @@ function go(name) {
   if (name === 'buy')       loadBuy();
   if (name === 'topzips')   loadTopZips();
   if (name === 'stress')    initStress();
+  if (name === 'pipeline')  loadPipeline();
   if (name === 'ask')       focusAskInput();
 }
 window.go = go;
@@ -979,6 +980,281 @@ async function ingestLink() {
   `;
 }
 
+// ---- Deal pipeline ------------------------------------------------------
+//
+// localStorage `reip_deals_v1`. Every deal carries inputs (so we can re-run
+// stress) plus the last stress result (so the list view can color the
+// verdict without re-hitting the API).
+
+const DEALS_KEY = 'reip_deals_v1';
+let DEALS = [];
+let PIPE_FILTER = 'all';
+let PIPE_SELECTED = new Set();    // for compare mode
+let PIPE_EDITING_ID = null;
+let LAST_STRESS_RESULT = null;    // capture stress test output so Save can attach
+
+const STATUS_META = {
+  researching:    { icon: '🔬', label: 'Researching',   color: 'border-fg text-fg' },
+  underwritten:   { icon: '📝', label: 'Underwritten',  color: 'border-accent text-accent' },
+  offer:          { icon: '📞', label: 'Offer made',    color: 'border-yellow text-yellow' },
+  under_contract: { icon: '📃', label: 'Under contract', color: 'border-yellow text-yellow' },
+  closed:         { icon: '✅', label: 'Closed',         color: 'border-green text-green' },
+  passed:         { icon: '❌', label: 'Passed',         color: 'border-red text-red' },
+};
+
+function loadDeals() {
+  try {
+    DEALS = JSON.parse(localStorage.getItem(DEALS_KEY) || '[]');
+    if (!Array.isArray(DEALS)) DEALS = [];
+  } catch (e) { DEALS = []; }
+}
+
+function persistDeals() {
+  DEALS.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+  localStorage.setItem(DEALS_KEY, JSON.stringify(DEALS));
+  updatePipelineCount();
+}
+
+function newDealFromStress(inputs, stressResult, opts = {}) {
+  const verdict = stressResult?.gate?.verdict;
+  const status = opts.status || (verdict === 'GREEN' ? 'underwritten' : 'researching');
+  const deal = {
+    id: 'd_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+    label: opts.label || _defaultDealLabel(inputs),
+    link: opts.link || '',
+    notes: opts.notes || '',
+    status,
+    inputs,
+    stress: stressResult,
+    created_at: Date.now(),
+    updated_at: Date.now(),
+  };
+  DEALS.unshift(deal);
+  persistDeals();
+  return deal;
+}
+
+function _defaultDealLabel(inputs) {
+  const p = inputs.purchase_price ? `$${Math.round(inputs.purchase_price / 1000)}k` : '?';
+  const r = inputs.monthly_rent ? `$${Math.round(inputs.monthly_rent)}/mo` : '?';
+  const s = inputs.state ? ` (${inputs.state})` : '';
+  return `${p} / ${r}${s}`;
+}
+
+function updateDeal(id, patch) {
+  const i = DEALS.findIndex(d => d.id === id);
+  if (i < 0) return;
+  DEALS[i] = { ...DEALS[i], ...patch, updated_at: Date.now() };
+  persistDeals();
+}
+
+function deleteDeal(id) {
+  DEALS = DEALS.filter(d => d.id !== id);
+  PIPE_SELECTED.delete(id);
+  persistDeals();
+}
+
+function clearAllDeals() {
+  if (!confirm(`Delete all ${DEALS.length} saved deals? This can't be undone.`)) return;
+  DEALS = [];
+  PIPE_SELECTED.clear();
+  localStorage.removeItem(DEALS_KEY);
+  updatePipelineCount();
+}
+
+function updatePipelineCount() {
+  const el = document.getElementById('pipelineNavCount');
+  if (el) el.textContent = DEALS.length ? `(${DEALS.length})` : '';
+}
+
+// ---- Pipeline render ---------------------------------------------------
+
+function loadPipeline() {
+  renderPipeline();
+}
+
+function renderPipeline() {
+  const host = document.getElementById('pipelineHost');
+  if (!host) return;
+  const filtered = PIPE_FILTER === 'all'
+    ? DEALS
+    : DEALS.filter(d => d.status === PIPE_FILTER);
+  if (!filtered.length) {
+    host.innerHTML = `<div class="p-8 text-center text-muted text-sm">
+      ${DEALS.length ? `No deals with status "${PIPE_FILTER}".` : 'No saved deals yet. Run a stress test and click <b class="text-accent">Save to pipeline</b>.'}
+    </div>`;
+    return;
+  }
+  const rows = filtered.map(d => {
+    const v = d.stress?.gate?.verdict;
+    const vColor = { GREEN: 'text-green', YELLOW: 'text-yellow', RED: 'text-red' }[v] || 'text-muted';
+    const base = d.stress?.scenarios?.[0];
+    const worst = d.stress?.scenarios?.[2];
+    const s = STATUS_META[d.status] || { icon: '?', label: d.status, color: '' };
+    const selected = PIPE_SELECTED.has(d.id);
+    return `
+      <tr class="border-t border-line hover:bg-bg cursor-pointer ${selected ? 'bg-bg' : ''}" onclick="openPipeDetail('${d.id}')">
+        <td class="py-2 pl-3 pr-1" onclick="event.stopPropagation(); togglePipeSelect('${d.id}')">
+          <input type="checkbox" class="cursor-pointer" ${selected ? 'checked' : ''}>
+        </td>
+        <td class="py-2 pr-3 font-medium">${escapeHtml(d.label)}</td>
+        <td class="py-2 pr-3 text-xs"><span class="inline-block px-1.5 py-0.5 rounded border ${s.color}">${s.icon} ${s.label}</span></td>
+        <td class="py-2 pr-3 font-semibold ${vColor}">${v || '—'}</td>
+        <td class="py-2 pr-3 text-right tabular-nums">${base ? fmtPct(base.cash_on_cash) : '—'}</td>
+        <td class="py-2 pr-3 text-right tabular-nums">${worst ? fmtPct(worst.irr) : '—'}</td>
+        <td class="py-2 pr-3 text-right tabular-nums">${d.stress?.price_to_green ? '$' + d.stress.price_to_green.toLocaleString() : '—'}</td>
+        <td class="py-2 pr-3 text-xs text-muted">${formatRelative(d.updated_at)}</td>
+      </tr>`;
+  }).join('');
+  host.innerHTML = `
+    <table class="w-full text-sm">
+      <thead class="text-xs uppercase tracking-wide text-muted bg-bg">
+        <tr>
+          <th class="py-2 pl-3 pr-1"></th>
+          <th class="text-left py-2 pr-3">Deal</th>
+          <th class="text-left py-2 pr-3">Status</th>
+          <th class="text-left py-2 pr-3">Verdict</th>
+          <th class="text-right py-2 pr-3">Base CoC</th>
+          <th class="text-right py-2 pr-3">Worst IRR</th>
+          <th class="text-right py-2 pr-3">Walk-away $</th>
+          <th class="text-right py-2 pr-3">Updated</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  updateCompareButton();
+}
+
+function togglePipeSelect(id) {
+  if (PIPE_SELECTED.has(id)) PIPE_SELECTED.delete(id);
+  else if (PIPE_SELECTED.size < 3) PIPE_SELECTED.add(id);
+  else { alert('Compare up to 3 deals at a time.'); return; }
+  renderPipeline();
+}
+
+function updateCompareButton() {
+  const btn = document.getElementById('pipeCompareBtn');
+  const countEl = document.getElementById('pipeCompareCount');
+  if (!btn || !countEl) return;
+  countEl.textContent = PIPE_SELECTED.size;
+  btn.disabled = PIPE_SELECTED.size < 2;
+}
+
+// ---- Pipeline detail modal ---------------------------------------------
+
+function openPipeDetail(id) {
+  const d = DEALS.find(x => x.id === id);
+  if (!d) return;
+  PIPE_EDITING_ID = id;
+  document.getElementById('pipeDetailLabel').value = d.label || '';
+  document.getElementById('pipeDetailStatus').value = d.status || 'researching';
+  document.getElementById('pipeDetailLink').value = d.link || '';
+  document.getElementById('pipeDetailNotes').value = d.notes || '';
+  document.getElementById('pipeDetailStress').innerHTML = d.stress
+    ? renderStressResult(d.stress)
+    : '<div class="text-muted text-sm">No stress result attached.</div>';
+  document.getElementById('pipeDetailModal').classList.remove('hidden');
+}
+
+function closePipeDetail() {
+  // Persist edits
+  if (PIPE_EDITING_ID) {
+    updateDeal(PIPE_EDITING_ID, {
+      label: document.getElementById('pipeDetailLabel').value.trim() || 'Untitled deal',
+      status: document.getElementById('pipeDetailStatus').value,
+      link: document.getElementById('pipeDetailLink').value.trim(),
+      notes: document.getElementById('pipeDetailNotes').value.trim(),
+    });
+  }
+  PIPE_EDITING_ID = null;
+  document.getElementById('pipeDetailModal').classList.add('hidden');
+  renderPipeline();
+}
+
+async function rerunCurrentDeal() {
+  if (!PIPE_EDITING_ID) return;
+  const d = DEALS.find(x => x.id === PIPE_EDITING_ID);
+  if (!d) return;
+  const host = document.getElementById('pipeDetailStress');
+  host.innerHTML = spinnerHTML('Re-running stress test…');
+  try {
+    const r = await fetch('/api/stress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(d.inputs),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const fresh = await r.json();
+    updateDeal(PIPE_EDITING_ID, { stress: fresh });
+    host.innerHTML = renderStressResult(fresh);
+  } catch (e) {
+    host.innerHTML = `<div class="text-red text-sm">Re-run failed: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function deleteCurrentDeal() {
+  if (!PIPE_EDITING_ID) return;
+  if (!confirm('Delete this deal?')) return;
+  deleteDeal(PIPE_EDITING_ID);
+  PIPE_EDITING_ID = null;
+  document.getElementById('pipeDetailModal').classList.add('hidden');
+  renderPipeline();
+}
+
+// ---- Compare drawer -----------------------------------------------------
+
+function openPipeCompare() {
+  const picked = [...PIPE_SELECTED].map(id => DEALS.find(d => d.id === id)).filter(Boolean);
+  if (picked.length < 2) return;
+  const host = document.getElementById('pipeCompareHost');
+  host.innerHTML = renderCompare(picked);
+  document.getElementById('pipeCompareModal').classList.remove('hidden');
+}
+
+function closePipeCompare() {
+  document.getElementById('pipeCompareModal').classList.add('hidden');
+}
+
+function renderCompare(deals) {
+  const metrics = [
+    { label: 'Verdict',       get: d => d.stress?.gate?.verdict || '—',
+      cls: d => ({ GREEN: 'text-green', YELLOW: 'text-yellow', RED: 'text-red' }[d.stress?.gate?.verdict] || '') },
+    { label: 'Purchase price', get: d => '$' + (d.inputs.purchase_price || 0).toLocaleString() },
+    { label: 'Monthly rent',   get: d => '$' + (d.inputs.monthly_rent || 0).toLocaleString() },
+    { label: 'State',          get: d => d.inputs.state || '—' },
+    { label: 'Base IRR',       get: d => fmtPct(d.stress?.scenarios?.[0]?.irr), cls: d => irrColor(d.stress?.scenarios?.[0]?.irr) },
+    { label: 'Base CoC',       get: d => fmtPct(d.stress?.scenarios?.[0]?.cash_on_cash), cls: d => cocColor(d.stress?.scenarios?.[0]?.cash_on_cash) },
+    { label: 'Base DSCR',      get: d => d.stress?.scenarios?.[0]?.dscr?.toFixed(2) ?? '—', cls: d => dscrColor(d.stress?.scenarios?.[0]?.dscr) },
+    { label: 'Stress IRR',     get: d => fmtPct(d.stress?.scenarios?.[1]?.irr), cls: d => irrColor(d.stress?.scenarios?.[1]?.irr) },
+    { label: 'Stress DSCR',    get: d => d.stress?.scenarios?.[1]?.dscr?.toFixed(2) ?? '—', cls: d => dscrColor(d.stress?.scenarios?.[1]?.dscr) },
+    { label: 'Worst IRR',      get: d => fmtPct(d.stress?.scenarios?.[2]?.irr), cls: d => irrColor(d.stress?.scenarios?.[2]?.irr) },
+    { label: 'Worst DSCR',     get: d => d.stress?.scenarios?.[2]?.dscr?.toFixed(2) ?? '—', cls: d => dscrColor(d.stress?.scenarios?.[2]?.dscr) },
+    { label: 'Walk-away $',    get: d => d.stress?.price_to_green ? '$' + d.stress.price_to_green.toLocaleString() : '—' },
+    { label: 'State overlay',  get: d => d.stress?.state_overlay_summary || '—' },
+    { label: 'Status',         get: d => (STATUS_META[d.status]?.label || d.status) },
+  ];
+  const head = deals.map(d => `<th class="py-2 px-3 text-left text-fg font-medium border-b border-line">${escapeHtml(d.label)}</th>`).join('');
+  const rows = metrics.map(m => {
+    const cells = deals.map(d => `<td class="py-2 px-3 ${m.cls ? m.cls(d) : ''}">${m.get(d)}</td>`).join('');
+    return `<tr class="border-b border-line"><td class="py-2 px-3 text-xs uppercase tracking-wide text-muted">${m.label}</td>${cells}</tr>`;
+  }).join('');
+  return `
+    <table class="w-full text-sm">
+      <thead>
+        <tr>
+          <th class="py-2 px-3 text-left text-xs uppercase tracking-wide text-muted border-b border-line">Metric</th>
+          ${head}
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+window.openPipeDetail = openPipeDetail;
+window.closePipeDetail = closePipeDetail;
+window.closePipeCompare = closePipeCompare;
+window.togglePipeSelect = togglePipeSelect;
+
 // ---- Stress test --------------------------------------------------------
 
 let STRESS_BOUND = false;
@@ -1012,9 +1288,30 @@ async function runStress() {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    host.innerHTML = renderStressResult(data);
+    LAST_STRESS_RESULT = { inputs: body, result: data };
+    host.innerHTML = renderStressResult(data)
+      + `<div class="bg-card border border-line rounded p-4 flex items-center gap-3">
+           <div class="text-sm flex-1">
+             <div class="text-fg font-medium">Save this deal to your pipeline?</div>
+             <div class="text-xs text-muted">Auto-titled <span class="text-fg">${escapeHtml(_defaultDealLabel(body))}</span> — you can rename, set status, and add notes from the Pipeline tab.</div>
+           </div>
+           <button id="stressSaveBtn" class="px-4 py-2 rounded bg-accent text-bg font-medium hover:opacity-90">+ Save to pipeline</button>
+         </div>`;
+    document.getElementById('stressSaveBtn')?.addEventListener('click', saveStressToPipeline);
   } catch (e) {
     host.innerHTML = `<div class="bg-card border border-red rounded p-4 text-red text-sm">Error: ${e.message}</div>`;
+  }
+}
+
+function saveStressToPipeline() {
+  if (!LAST_STRESS_RESULT) return;
+  const d = newDealFromStress(LAST_STRESS_RESULT.inputs, LAST_STRESS_RESULT.result);
+  const btn = document.getElementById('stressSaveBtn');
+  if (btn) {
+    btn.textContent = '✓ Saved — open Pipeline';
+    btn.classList.remove('bg-accent', 'text-bg');
+    btn.classList.add('border', 'border-green', 'text-green');
+    btn.onclick = () => go('pipeline');
   }
 }
 
@@ -1146,11 +1443,53 @@ function dscrColor(x) {
   return 'text-red';
 }
 
+function initPipelineHandlers() {
+  // Filter pills
+  document.querySelectorAll('.pipe-filter').forEach(btn => {
+    btn.addEventListener('click', () => {
+      PIPE_FILTER = btn.dataset.status;
+      document.querySelectorAll('.pipe-filter').forEach(b => {
+        b.classList.remove('border-accent', 'text-accent');
+        b.classList.add('border-line', 'text-muted');
+      });
+      btn.classList.add('border-accent', 'text-accent');
+      btn.classList.remove('border-line', 'text-muted');
+      renderPipeline();
+    });
+  });
+  // Compare / Clear
+  document.getElementById('pipeCompareBtn')?.addEventListener('click', openPipeCompare);
+  document.getElementById('pipeClearAll')?.addEventListener('click', () => {
+    clearAllDeals();
+    renderPipeline();
+  });
+  // Detail-modal buttons
+  document.getElementById('pipeDetailRerun')?.addEventListener('click', rerunCurrentDeal);
+  document.getElementById('pipeDetailDelete')?.addEventListener('click', deleteCurrentDeal);
+  // Close detail by clicking the backdrop (but not the inner card)
+  document.getElementById('pipeDetailModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'pipeDetailModal') closePipeDetail();
+  });
+  document.getElementById('pipeCompareModal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'pipeCompareModal') closePipeCompare();
+  });
+  // Esc closes either modal
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (!document.getElementById('pipeDetailModal').classList.contains('hidden')) closePipeDetail();
+      else if (!document.getElementById('pipeCompareModal').classList.contains('hidden')) closePipeCompare();
+    }
+  });
+}
+
 // Boot
 document.addEventListener('DOMContentLoaded', () => {
   renderUwForm();
   $('uwSubmit').addEventListener('click', runUnderwrite);
   $('linkSubmit').addEventListener('click', ingestLink);
   $('linkInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') ingestLink(); });
+  loadDeals();
+  updatePipelineCount();
+  initPipelineHandlers();
   go('dashboard');
 });
