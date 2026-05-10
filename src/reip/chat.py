@@ -361,9 +361,21 @@ def chat(user_message: str, history: list[dict] | None = None,
     """
     if anthropic is None:
         return {"error": "anthropic SDK not installed. `uv pip install anthropic`."}
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    # Re-load .env here so a key dropped at the project root is picked up
+    # even if config.py was imported before the file existed.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=False)
+    except ImportError:
+        pass
+    api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
-        return {"error": "Set ANTHROPIC_API_KEY in your environment to enable chat."}
+        return {"error": (
+            "Set ANTHROPIC_API_KEY to enable chat. Either: "
+            "(a) echo 'ANTHROPIC_API_KEY=sk-ant-…' >> /Users/richardchen/realestate-platform/.env "
+            "then restart `reip serve`, or "
+            "(b) ANTHROPIC_API_KEY=sk-ant-… reip serve."
+        )}
 
     client = anthropic.Anthropic(api_key=api_key)
     context = _build_context()
