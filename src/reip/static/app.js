@@ -58,20 +58,31 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+function renderMarkdown(md) {
+  // marked + DOMPurify load via CDN; if either is missing, fall back to
+  // escaped plain text so the message still displays.
+  if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+    return `<div class="whitespace-pre-wrap">${escapeHtml(md)}</div>`;
+  }
+  marked.setOptions({ breaks: true, gfm: true });
+  return DOMPurify.sanitize(marked.parse(md));
+}
+
 function renderAskMessage(role, text, toolCalls) {
   const thread = document.getElementById('askThread');
   if (!thread) return;
   const div = document.createElement('div');
   if (role === 'user') {
     div.className = 'flex justify-end';
-    div.innerHTML = `<div class="bg-accent text-bg rounded-lg px-3 py-2 max-w-[80%] whitespace-pre-wrap">${escapeHtml(text)}</div>`;
+    div.innerHTML = `<div class="chat-bubble-user whitespace-pre-wrap">${escapeHtml(text)}</div>`;
   } else if (role === 'assistant') {
     div.className = 'flex flex-col gap-1';
     let toolsLine = '';
     if (toolCalls && toolCalls.length) {
-      toolsLine = `<div class="text-xs text-muted">${toolCalls.length} tool call${toolCalls.length>1?'s':''}: ${toolCalls.map(t => t.name).join(', ')}</div>`;
+      const pills = toolCalls.map(t => `<span class="tool-pill">${escapeHtml(t.name)}</span>`).join('');
+      toolsLine = `<div class="chat-tools-line">used ${toolCalls.length} tool${toolCalls.length>1?'s':''}: ${pills}</div>`;
     }
-    div.innerHTML = `${toolsLine}<div class="bg-card border border-line rounded-lg px-3 py-2 max-w-[95%] whitespace-pre-wrap">${escapeHtml(text)}</div>`;
+    div.innerHTML = `${toolsLine}<div class="chat-bubble-assistant"><div class="markdown-body">${renderMarkdown(text)}</div></div>`;
   } else {
     div.className = 'flex justify-center';
     div.innerHTML = `<div class="text-xs text-yellow">${escapeHtml(text)}</div>`;
