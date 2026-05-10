@@ -363,9 +363,18 @@ def chat(user_message: str, history: list[dict] | None = None,
         return {"error": "anthropic SDK not installed. `uv pip install anthropic`."}
     # Re-load .env here so a key dropped at the project root is picked up
     # even if config.py was imported before the file existed.
+    # override=True because the parent shell often exports
+    # ANTHROPIC_API_KEY="" (empty) and load_dotenv(override=False)
+    # would refuse to overwrite that with the real value from .env.
     try:
         from dotenv import load_dotenv
-        load_dotenv(override=False)
+        from pathlib import Path
+        # Look for .env at project root regardless of CWD
+        env_path = Path(__file__).resolve().parents[2] / ".env"
+        if env_path.exists():
+            load_dotenv(env_path, override=True)
+        else:
+            load_dotenv(override=True)
     except ImportError:
         pass
     api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
@@ -389,13 +398,23 @@ def chat(user_message: str, history: list[dict] | None = None,
 
     tool_calls = []
     for _ in range(max_tool_iters):
-        resp = client.messages.create(
-            model=MODEL,
-            max_tokens=2000,
-            system=system,
-            tools=TOOLS,
-            messages=messages,
-        )
+        try:
+            resp = client.messages.create(
+                model=MODEL,
+                max_tokens=2000,
+                system=system,
+                tools=TOOLS,
+                messages=messages,
+            )
+        except anthropic.AuthenticationError:
+            return {"error": (
+                f"Anthropic rejected the API key (401). Check .env — key length "
+                f"{len(api_key)} chars (real keys are ~100). Paste again."
+            )}
+        except anthropic.RateLimitError as e:
+            return {"error": f"Anthropic rate-limited (429): {e}"}
+        except anthropic.APIError as e:
+            return {"error": f"Anthropic API error: {type(e).__name__}: {e}"}
         if resp.stop_reason != "tool_use":
             # Final text answer
             text_parts = [b.text for b in resp.content if b.type == "text"]
