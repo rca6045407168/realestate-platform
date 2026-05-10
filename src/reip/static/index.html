@@ -73,6 +73,15 @@
     .chat-bubble-assistant { background: #0d1117; border: 1px solid #30363d; padding: 14px 18px; border-radius: 4px 18px 18px 18px; max-width: 100%; }
     .chat-tools-line { font-size: 11px; color: #8b949e; padding-left: 4px; margin-bottom: 4px; }
     .chat-tools-line .tool-pill { background: #161b22; border: 1px solid #30363d; padding: 1px 8px; border-radius: 10px; margin-right: 4px; color: #d29922; }
+    /* Conversation sidebar */
+    .conv-row { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+    .conv-row:hover { background: #161b22; border-color: #30363d; }
+    .conv-row.active { background: #161b22; border-color: #58a6ff; }
+    .conv-row .conv-title { flex: 1; font-size: 12.5px; color: #c9d1d9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .conv-row .conv-date  { font-size: 10.5px; color: #6e7681; }
+    .conv-row .conv-del { opacity: 0; color: #8b949e; font-size: 14px; padding: 0 2px; line-height: 1; }
+    .conv-row:hover .conv-del { opacity: 1; }
+    .conv-row .conv-del:hover { color: #f85149; }
   </style>
 </head>
 <body class="min-h-screen">
@@ -268,15 +277,26 @@
 
   <!-- ============== ASK REIP (chat) ============== -->
   <section id="screen-ask" class="screen hidden">
-    <div class="max-w-5xl mx-auto">
-      <div id="askThread" class="bg-card border border-line rounded-lg p-5 mb-3 min-h-[60vh] max-h-[72vh] overflow-y-auto space-y-4 text-sm"></div>
-      <div class="flex gap-2">
-        <input id="askInput" type="text" placeholder="e.g. 'best Memphis zips that are still expanding' or 'underwrite a $200k Cleveland duplex at 7%'"
-          class="flex-1 bg-bg border border-line rounded px-3 py-2.5 text-sm focus:border-accent focus:outline-none" />
-        <button id="askSend" class="px-5 py-2.5 rounded bg-accent text-bg font-medium hover:opacity-90">Send</button>
-      </div>
-      <div class="mt-2 text-xs text-muted">
-        Try: "where should I invest?" · "compare Memphis vs Indianapolis for cashflow" · "underwrite a $180k Indy 3bed at 7.25%" · "explain regime-adjusted IRR"
+    <div class="flex gap-4 max-w-[1400px] mx-auto">
+      <!-- Conversation sidebar -->
+      <aside class="w-60 flex-shrink-0">
+        <button id="askNewChat" class="w-full mb-3 px-3 py-2 rounded bg-accent text-bg font-medium text-sm hover:opacity-90">+ New chat</button>
+        <div class="text-xs text-muted uppercase tracking-wide mb-2 px-1">History</div>
+        <div id="askConversations" class="space-y-1 max-h-[72vh] overflow-y-auto"></div>
+        <button id="askClearAll" class="mt-3 text-xs text-muted hover:text-red px-1">Clear all history</button>
+      </aside>
+
+      <!-- Main thread -->
+      <div class="flex-1 min-w-0">
+        <div id="askThread" class="bg-card border border-line rounded-lg p-5 mb-3 min-h-[60vh] max-h-[72vh] overflow-y-auto space-y-4 text-sm"></div>
+        <div class="flex gap-2">
+          <input id="askInput" type="text" placeholder="e.g. 'best Memphis zips that are still expanding' or 'underwrite a $200k Cleveland duplex at 7%'"
+            class="flex-1 bg-bg border border-line rounded px-3 py-2.5 text-sm focus:border-accent focus:outline-none" />
+          <button id="askSend" class="px-5 py-2.5 rounded bg-accent text-bg font-medium hover:opacity-90">Send</button>
+        </div>
+        <div class="mt-2 text-xs text-muted">
+          Try: "where should I invest?" · "compare Memphis vs Indianapolis for cashflow" · "underwrite a $180k Indy 3bed at 7.25%" · "explain regime-adjusted IRR"
+        </div>
       </div>
     </div>
   </section>

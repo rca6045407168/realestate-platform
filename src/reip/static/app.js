@@ -45,13 +45,137 @@ function go(name) {
 window.go = go;
 
 // ---- Ask reip (chat) ----------------------------------------------------
+//
+// Conversations persist in localStorage as a list of {id, title, created_at,
+// updated_at, messages: [{role, content, tool_calls?}]}. Single-user
+// platform, no auth — localStorage is private to this browser.
 
-const ASK_HISTORY = [];
+const ASK_STORE_KEY = 'reip_ask_conversations_v1';
+const ASK_CURRENT_KEY = 'reip_ask_current_id_v1';
+const ASK_MAX_CONVS = 50;
+
+let CONVERSATIONS = [];   // array of conversation objects
+let CURRENT_ID = null;     // id of the open conversation
+
+function loadConversations() {
+  try {
+    CONVERSATIONS = JSON.parse(localStorage.getItem(ASK_STORE_KEY) || '[]');
+    if (!Array.isArray(CONVERSATIONS)) CONVERSATIONS = [];
+  } catch (e) { CONVERSATIONS = []; }
+  CURRENT_ID = localStorage.getItem(ASK_CURRENT_KEY) || null;
+}
+
+function persistConversations() {
+  // LRU cap
+  CONVERSATIONS.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+  if (CONVERSATIONS.length > ASK_MAX_CONVS) CONVERSATIONS.length = ASK_MAX_CONVS;
+  localStorage.setItem(ASK_STORE_KEY, JSON.stringify(CONVERSATIONS));
+  if (CURRENT_ID) localStorage.setItem(ASK_CURRENT_KEY, CURRENT_ID);
+}
+
+function currentConversation() {
+  return CONVERSATIONS.find(c => c.id === CURRENT_ID) || null;
+}
+
+function newConversation() {
+  const c = {
+    id: 'c_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+    title: 'New chat',
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    messages: [],
+  };
+  CONVERSATIONS.unshift(c);
+  CURRENT_ID = c.id;
+  persistConversations();
+  renderConversationList();
+  renderConversationThread();
+  focusAskInput();
+}
+
+function selectConversation(id) {
+  CURRENT_ID = id;
+  localStorage.setItem(ASK_CURRENT_KEY, id);
+  renderConversationList();
+  renderConversationThread();
+}
+
+function deleteConversation(id) {
+  CONVERSATIONS = CONVERSATIONS.filter(c => c.id !== id);
+  if (CURRENT_ID === id) {
+    CURRENT_ID = CONVERSATIONS[0]?.id || null;
+  }
+  persistConversations();
+  renderConversationList();
+  renderConversationThread();
+}
+
+function clearAllConversations() {
+  if (!confirm(`Delete all ${CONVERSATIONS.length} conversations? This can't be undone.`)) return;
+  CONVERSATIONS = [];
+  CURRENT_ID = null;
+  localStorage.removeItem(ASK_STORE_KEY);
+  localStorage.removeItem(ASK_CURRENT_KEY);
+  renderConversationList();
+  renderConversationThread();
+}
+
+function formatRelative(ts) {
+  if (!ts) return '';
+  const dt = Date.now() - ts;
+  const m = Math.floor(dt / 60000);
+  if (m < 1)   return 'just now';
+  if (m < 60)  return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24)  return h + 'h ago';
+  const d = Math.floor(h / 24);
+  if (d < 7)   return d + 'd ago';
+  return new Date(ts).toLocaleDateString();
+}
+
+function renderConversationList() {
+  const host = document.getElementById('askConversations');
+  if (!host) return;
+  if (!CONVERSATIONS.length) {
+    host.innerHTML = '<div class="text-xs text-muted px-2 py-3">No history yet. Start a chat below.</div>';
+    return;
+  }
+  host.innerHTML = CONVERSATIONS.map(c => `
+    <div class="conv-row ${c.id === CURRENT_ID ? 'active' : ''}" onclick="selectConversation('${c.id}')">
+      <div class="conv-title" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}</div>
+      <div class="conv-date">${formatRelative(c.updated_at)}</div>
+      <span class="conv-del" onclick="event.stopPropagation(); deleteConversation('${c.id}')" title="Delete">×</span>
+    </div>
+  `).join('');
+}
+
+function renderConversationThread() {
+  const thread = document.getElementById('askThread');
+  if (!thread) return;
+  thread.innerHTML = '';
+  const conv = currentConversation();
+  if (!conv || !conv.messages.length) {
+    thread.innerHTML = `<div class="text-xs text-muted text-center pt-12">
+      Conversational research over the full REIP dataset. The system prompt is pre-loaded with current
+      top markets and the 11 verified live-listing metros so most questions answer in one Claude call
+      with zero tool use; specific lookups (one zip, one underwriting) trigger a tool call.<br><br>
+      Start with one of the example prompts under the input, or ask anything.
+    </div>`;
+    return;
+  }
+  for (const m of conv.messages) {
+    renderAskMessage(m.role, m.content, m.tool_calls || []);
+  }
+}
 
 function focusAskInput() {
   const el = document.getElementById('askInput');
   if (el) setTimeout(() => el.focus(), 50);
 }
+
+// Expose for onclick handlers
+window.selectConversation = selectConversation;
+window.deleteConversation = deleteConversation;
 
 function escapeHtml(s) {
   if (s == null) return '';
@@ -96,24 +220,56 @@ async function sendAsk() {
   const msg = input.value.trim();
   if (!msg) return;
   input.value = '';
+
+  // Ensure a current conversation exists. If this is the first message,
+  // also wipe the "start a chat" placeholder.
+  let conv = currentConversation();
+  if (!conv) {
+    newConversation();
+    conv = currentConversation();
+  } else if (conv.messages.length === 0) {
+    // Wipe the placeholder DOM before the first message renders
+    document.getElementById('askThread').innerHTML = '';
+  }
+
+  // Auto-title from the first message (truncate at 60 chars on a word boundary)
+  if (!conv.messages.length) {
+    const t = msg.length > 60 ? msg.slice(0, 60).replace(/\s+\S*$/, '') + '…' : msg;
+    conv.title = t;
+  }
+
+  conv.messages.push({ role: 'user', content: msg });
+  conv.updated_at = Date.now();
+  persistConversations();
+  renderConversationList();
   renderAskMessage('user', msg);
-  ASK_HISTORY.push({ role: 'user', content: msg });
+
   const thread = document.getElementById('askThread');
   const pending = document.createElement('div');
   pending.className = 'flex items-center gap-2 text-muted text-xs';
   pending.innerHTML = `<div class="spinner" style="width:14px;height:14px;border-width:2px;"></div>thinking…`;
   thread.appendChild(pending);
   thread.scrollTop = thread.scrollHeight;
+
   try {
+    // Send all prior messages as history (not the one we just appended)
+    const history = conv.messages.slice(0, -1).map(m => ({ role: m.role, content: m.content }));
     const r = await api('/chat', {
       method: 'POST',
-      body: JSON.stringify({ message: msg, history: ASK_HISTORY.slice(0, -1) }),
+      body: JSON.stringify({ message: msg, history }),
     });
     pending.remove();
-    if (r.error) { renderAskMessage('system', r.error); return; }
+    if (r.error) {
+      renderAskMessage('system', r.error);
+      return;
+    }
     const reply = r.reply || '(empty reply)';
-    renderAskMessage('assistant', reply, r.tool_calls || []);
-    ASK_HISTORY.push({ role: 'assistant', content: reply });
+    const toolCalls = r.tool_calls || [];
+    renderAskMessage('assistant', reply, toolCalls);
+    conv.messages.push({ role: 'assistant', content: reply, tool_calls: toolCalls });
+    conv.updated_at = Date.now();
+    persistConversations();
+    renderConversationList();
   } catch (e) {
     pending.remove();
     renderAskMessage('system', `Error: ${e.message}`);
@@ -121,12 +277,21 @@ async function sendAsk() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  const btn = document.getElementById('askSend');
-  const inp = document.getElementById('askInput');
-  if (btn) btn.addEventListener('click', sendAsk);
-  if (inp) inp.addEventListener('keydown', (e) => {
+  loadConversations();
+  renderConversationList();
+  renderConversationThread();
+
+  const send = document.getElementById('askSend');
+  const inp  = document.getElementById('askInput');
+  const newB = document.getElementById('askNewChat');
+  const clrB = document.getElementById('askClearAll');
+
+  if (send) send.addEventListener('click', sendAsk);
+  if (inp)  inp.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAsk(); }
   });
+  if (newB) newB.addEventListener('click', newConversation);
+  if (clrB) clrB.addEventListener('click', clearAllConversations);
 });
 
 // ---- DASHBOARD -----------------------------------------------------------
