@@ -670,12 +670,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let r;
     try { r = await api('/remarks', { method: 'POST', body: JSON.stringify({ text }) }); }
     catch (e) { $('remarksOut').innerHTML = `<div class="text-red">${e.message}</div>`; return; }
-    const flags = ['motivated', 'distressed', 'use_change', 'assumable', 'price_cut', 'short_sale', 'probate'];
+    const flags = ['motivated', 'distressed', 'use_change', 'assumable',
+                    'price_cut', 'short_sale', 'probate', 'auction'];
+    const hit = flags.filter(f => r[f]).length;
     $('remarksOut').innerHTML = `
       <div class="bg-card rounded border border-line p-4">
-        <div class="text-xs uppercase tracking-wide text-muted mb-2">Alpha stack: ${flags.filter(f => r[f]).length}/7 flags</div>
+        <div class="text-xs uppercase tracking-wide text-muted mb-2">Alpha stack: ${hit}/${flags.length} flags</div>
         <div class="flex flex-wrap gap-2 mb-3">
-          ${flags.map(f => `<span class="px-2 py-1 rounded text-xs ${r[f] ? 'verdict-GREEN' : 'bg-bg border border-line text-muted'}">${f}</span>`).join('')}
+          ${flags.map(f => `<span class="px-2 py-1 rounded text-xs ${r[f] ? (f === 'auction' ? 'verdict-RED' : 'verdict-GREEN') : 'bg-bg border border-line text-muted'}">${f}</span>`).join('')}
         </div>
         ${r.matched_terms.length ? `<div class="text-xs text-muted">matched: ${r.matched_terms.map(t => `<code class="px-1 bg-bg rounded">${t}</code>`).join(' · ')}</div>` : ''}
       </div>
@@ -1648,7 +1650,25 @@ function renderBuyBox(b) {
     crash:     'bg-red/10 text-red border-red',
   })[b.regime_label] || 'border-line text-muted';
   const climateBlock = b.climate ? renderClimateBlock(b.climate) : '';
-  return climateBlock + `
+  // MSA stability strip — show the metro's historical max-DD as inline context
+  const stab = b.msa_stability;
+  const stabBlock = stab ? (() => {
+    const tCol = ({Boring:'border-green text-green',Standard:'border-line text-fg',
+                   Volatile:'border-yellow text-yellow','Boom-Bust':'border-red text-red'})[stab.tier] || 'border-line text-muted';
+    return `
+      <div class="bg-bg rounded border ${tCol.split(' ')[0]} p-3 mb-3 flex items-center justify-between text-sm">
+        <div>
+          <span class="text-xs uppercase tracking-wide text-muted">Parent MSA history:</span>
+          <span class="ml-2 px-2 py-0.5 rounded border ${tCol} text-xs font-semibold uppercase">${stab.tier}</span>
+          <span class="text-muted ml-2 text-xs">${b.cbsa_name || '?'}</span>
+        </div>
+        <div class="text-right text-xs text-muted">
+          Max DD 1985-now: <span class="${tCol.split(' ')[1]} font-semibold tabular-nums">${stab.max_dd_pct}%</span>
+          ${stab.ttr_months ? ' · recovery ' + Math.round(stab.ttr_months/12*10)/10 + ' yrs' : ''}
+        </div>
+      </div>`;
+  })() : '';
+  return climateBlock + stabBlock + `
     <div class="grid grid-cols-3 gap-3">
       <div class="bg-bg rounded border border-line p-3">
         <div class="text-xs uppercase tracking-wide text-muted">Target price</div>

@@ -174,12 +174,22 @@ TOOLS = [
     },
     {
         "name": "parse_remarks",
-        "description": "Parse MLS public-remarks text and return the 7 alpha flags (motivated, distressed, use_change, assumable, price_cut, short_sale, probate) with matched terms.",
+        "description": "Parse MLS public-remarks text and return the 8 alpha flags (motivated, distressed, use_change, assumable, price_cut, short_sale, probate, auction) with matched terms. The `auction` flag catches REO / bank-owned / foreclosure / trustee sale / sheriff sale / HUD-owned / online-auction language — surface this when the user is hunting for distressed/auction deals.",
         "input_schema": {
             "type": "object",
             "properties": {"text": {"type": "string"}},
             "required": ["text"],
         },
+    },
+    {
+        "name": "current_rates",
+        "description": (
+            "Get TODAY's macro rates: 30-year fixed mortgage rate (Freddie Mac PMMS), "
+            "10-year Treasury yield, effective fed funds rate. Use when the user asks "
+            "'what are rates today', 'where are mortgage rates', or any question where "
+            "current rates ground the discussion (e.g. 'is 7% conservative or optimistic?')."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "portfolio_resilience",
@@ -370,6 +380,19 @@ def _execute(name: str, args: dict) -> Any:
         ).df()
         return rows.to_dict("records")
 
+    if name == "current_rates":
+        out = {}
+        for sid, label in [("MORTGAGE30US", "mortgage_30y"),
+                            ("DGS10", "treasury_10y"),
+                            ("FEDFUNDS", "fed_funds")]:
+            r = con.execute(
+                "SELECT period, value FROM fred_macro WHERE series_id = ? "
+                "ORDER BY period DESC LIMIT 1", [sid]
+            ).fetchone()
+            if r:
+                out[label] = {"value": float(r[1]), "as_of": str(r[0])}
+        return out
+
     if name == "portfolio_resilience":
         # The chat orchestrator passes pipeline_summary as a parameter via
         # closure. We pull it from the executor's pipeline list captured at
@@ -450,6 +473,7 @@ def _execute(name: str, args: dict) -> Any:
             "motivated": s.motivated, "distressed": s.distressed,
             "use_change": s.use_change, "assumable": s.assumable,
             "price_cut": s.price_cut, "short_sale": s.short_sale, "probate": s.probate,
+            "auction":   s.auction,
             "score": round(s.score, 3),
             "matched_terms": list(s.matched_terms),
         }

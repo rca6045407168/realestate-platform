@@ -325,6 +325,7 @@ def remarks(text):
         "use_change": sigs.use_change, "assumable": sigs.assumable,
         "price_cut": sigs.price_cut, "short_sale": sigs.short_sale,
         "probate": sigs.probate,
+        "auction": sigs.auction,
         "score": round(sigs.score, 3),
         "matched_terms": list(sigs.matched_terms),
     }, indent=2))
@@ -358,6 +359,23 @@ def underwrite(purchase_price, rehab_cost, arv, monthly_rent, mortgage_rate,
     if show_sensitivity:
         click.echo("\nSensitivity (rent × vacancy × exit cap → IRR / equity multiple):")
         click.echo(underwriting.sensitivity(a).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+
+
+@cli.command()
+def macro():
+    """Show current macro rates from the local fred_macro table."""
+    con = connect()
+    for sid, label in [("MORTGAGE30US", "30Y mortgage"),
+                        ("DGS10",         "10Y Treasury"),
+                        ("FEDFUNDS",      "Fed funds")]:
+        r = con.execute(
+            "SELECT period, value FROM fred_macro WHERE series_id = ? "
+            "ORDER BY period DESC LIMIT 1", [sid]
+        ).fetchone()
+        if r:
+            click.echo(f"  {label:15s} {r[1]:6.2f}%  (as of {r[0]})")
+        else:
+            click.echo(f"  {label:15s} (no data — run `reip ingest --only fred`)")
 
 
 @cli.group()

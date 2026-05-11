@@ -24,8 +24,11 @@ Signals (each a precision-tuned regex; no false-positive language like
                  "now $"
   short_sale  — "short sale", "third party approval", "subject to bank approval"
   probate     — "probate", "estate sale", "trust sale", "sold by heir"
+  auction     — "auction", "REO", "bank owned", "foreclosure", "trustee sale",
+                 "sheriff sale", "HUD owned", "court-ordered sale", "online auction",
+                 "starting bid"
 
-Additionally returns a `score` (0–1) that's just count-of-categories-hit/7.
+Additionally returns a `score` (0–1) that's just count-of-categories-hit/8.
 """
 from __future__ import annotations
 import re
@@ -61,6 +64,18 @@ _PATTERNS = {
         r"lender\s+approval\s+required)\b", re.I),
     "probate":   re.compile(
         r"\b(probate|estate\s+sale|trust\s+sale|sold\s+by\s+heir|conservator(\s+sale)?)\b", re.I),
+    "auction":   re.compile(
+        # Auction / foreclosure / REO / bank-owned. Negative lookahead on
+        # "no auction" / "private (not auction)" to avoid false positives.
+        # `reo` requires word boundaries so "stereo" / "reorder" don't match.
+        r"\b(?:(?<!no\s)(?<!not\s)auction(?!eers?\s+approved)|"
+        r"(?:bank|lender)[\s-]?owned|"
+        r"reo\s+(?:property|sale|listing)|\breo\b(?!\w)|"
+        r"foreclosure|trustee[\']?s?\s+sale|sheriff[\']?s?\s+sale|"
+        r"hud[\s-]?owned|hud\s+home|"
+        r"court[\s-]?ordered\s+sale|"
+        r"online\s+auction|live\s+auction|starting\s+bid|opening\s+bid|"
+        r"foreclosed|repossessed)\b", re.I),
 }
 
 
@@ -73,8 +88,16 @@ class RemarkSignals:
     price_cut: bool = False
     short_sale: bool = False
     probate: bool = False
+    auction: bool = False
     score: float = 0.0
     matched_terms: tuple[str, ...] = ()
+
+
+# Negation phrases that should suppress the `auction` flag when the only
+# auction-indicator is a bare "auction" mention. Variable-width lookbehind
+# isn't supported in re, so we post-filter.
+_AUCTION_NEGATIONS = re.compile(
+    r"(?:not\s+(?:an?\s+)?|no\s+|never\s+(?:an?\s+)?|non[-\s]?)auction\b", re.I)
 
 
 def parse(text: str | None) -> RemarkSignals:
@@ -88,12 +111,31 @@ def parse(text: str | None) -> RemarkSignals:
         hits[cat] = bool(m)
         if m:
             matched_terms.append(m.group(0).strip().lower())
+
+    # Auction post-filter: if the only thing triggering the auction flag is
+    # the bare word "auction" AND the text has a negation like "not an auction",
+    # drop the flag.
+    if hits.get("auction"):
+        matched_auction = next((t for t in matched_terms
+                                 if any(kw in t for kw in
+                                        ("auction", "reo", "foreclos", "trustee",
+                                         "sheriff", "hud", "court-ordered",
+                                         "starting bid", "opening bid", "bank-owned",
+                                         "bank owned", "lender-owned", "lender owned"))),
+                                None)
+        if matched_auction == "auction" and _AUCTION_NEGATIONS.search(text):
+            hits["auction"] = False
+            try:
+                matched_terms.remove("auction")
+            except ValueError:
+                pass
+
     score = sum(hits.values()) / len(_PATTERNS)
     return RemarkSignals(
         motivated=hits["motivated"], distressed=hits["distressed"],
         use_change=hits["use_change"], assumable=hits["assumable"],
         price_cut=hits["price_cut"], short_sale=hits["short_sale"],
-        probate=hits["probate"],
+        probate=hits["probate"], auction=hits["auction"],
         score=score, matched_terms=tuple(matched_terms),
     )
 

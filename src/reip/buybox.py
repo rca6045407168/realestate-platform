@@ -113,6 +113,8 @@ class BuyBox:
     climate: Optional[dict] = None
     # ---- sales-based ARV (Redfin Data Center) — None if redfin_market lacks data ----
     arv_sales_based: Optional[dict] = None
+    # ---- parent-MSA historical stability (FHFA HPI 1985-now) ----
+    msa_stability: Optional[dict] = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -277,6 +279,22 @@ def derive(con, zip_code: str, archetype_hint: Optional[str] = None) -> Optional
 
     sales_based = arv_sales_based(con, str(z).zfill(5))
 
+    # Pull parent-MSA stability tier so the buy box also shows the metro's
+    # historical drawdown context (Boring / Standard / Volatile / Boom-Bust).
+    try:
+        from . import strategy as strategy_mod
+        msa_stability = strategy_mod.stability_for(con, str(cbsa_code or ""))
+    except Exception:
+        msa_stability = None
+    if msa_stability:
+        # Surface as a note so it shows in chat answers too
+        notes.append(
+            f"Parent MSA ({cbsa_name or '?'}) historical stability: "
+            f"{msa_stability['tier']} ({msa_stability['max_dd_pct']}% max drawdown 1985-now). "
+            f"{'This metro was hit hard in 2007-2012.' if msa_stability['tier'] == 'Boom-Bust' else ''}"
+            f"{'Shallow historical drawdowns — survives recessions well.' if msa_stability['tier'] == 'Boring' else ''}".strip()
+        )
+
     return BuyBox(
         zip=str(z).zfill(5), state=state, cbsa_code=cbsa_code, cbsa_name=cbsa_name,
         archetype_hint=archetype_hint,
@@ -288,6 +306,7 @@ def derive(con, zip_code: str, archetype_hint: Optional[str] = None) -> Optional
         arv_now=round(zhvi), arv_trend_12mo=arv_trend,
         arv_method="trend-based (ZHVI × half-decayed 12mo growth, capped ±10%)",
         arv_sales_based=sales_based,
+        msa_stability=msa_stability,
         target_cap_rate=target_cap_rate, floor_cap_rate=floor_cap_rate,
         typical_deal=typical_deal,
         regime_label=regime_label, regime_score=regime_score,

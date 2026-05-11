@@ -6,6 +6,32 @@ from reip.store import init, upsert_df
 from reip import remarks, avm, report
 
 
+def test_remarks_parser_auction_flag():
+    """The new auction flag catches REO/foreclosure/trustee/sheriff/HUD-owned
+    language but suppresses false positives like 'not an auction' and 'stereo'."""
+    positives = [
+        "Bank-owned REO property. Cash only.",
+        "Online auction, starting bid $50,000.",
+        "Trustees sale, HUD owned home.",
+        "Court-ordered sale. Investor special.",
+        "Sheriff sale on 6/15.",
+        "Foreclosed home, sold as-is.",
+    ]
+    for text in positives:
+        s = remarks.parse(text)
+        assert s.auction, f"Expected auction=True for: {text!r}"
+    negatives = [
+        "Beautiful home with stereo system.",
+        "Not an auction property, motivated seller.",
+        "No auction needed.",
+        "Non-auction sale.",
+        "Charming starter home, move-in ready.",
+    ]
+    for text in negatives:
+        s = remarks.parse(text)
+        assert not s.auction, f"Expected auction=False for: {text!r}"
+
+
 def test_remarks_parser_catches_canonical_phrases():
     text = ("Charming 3BR fixer-upper, MOTIVATED SELLER relocating, "
             "sold AS-IS, ASSUMABLE VA loan at 3.25%, R-2 zoning ADU potential, "
@@ -13,7 +39,7 @@ def test_remarks_parser_catches_canonical_phrases():
     s = remarks.parse(text)
     assert s.motivated and s.distressed and s.use_change
     assert s.assumable and s.price_cut
-    assert s.score >= 5 / 7
+    assert s.score >= 5 / 8     # 8 categories now (added auction)
     # Canonical terms surface in matched_terms
     assert any("motivated seller" in t for t in s.matched_terms)
     # parse() returns the FIRST regex hit per category; in this text the

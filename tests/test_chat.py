@@ -163,7 +163,8 @@ def test_every_tool_executes():
         ("msa_detail",    {"cbsa_code": "32820"}),
         ("underwrite",    {"purchase_price": 100000, "monthly_rent": 1000}),
         ("avm_zips",      {"direction": "cold", "limit": 2}),
-        ("parse_remarks", {"text": "motivated seller"}),
+        ("parse_remarks", {"text": "trustees sale, REO, motivated seller"}),
+        ("current_rates", {}),
     ]
     for name, args in cases:
         out = chat._execute(name, args)

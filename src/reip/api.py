@@ -318,6 +318,7 @@ def parse_remarks(req: RemarksRequest):
         "motivated": s.motivated, "distressed": s.distressed,
         "use_change": s.use_change, "assumable": s.assumable,
         "price_cut": s.price_cut, "short_sale": s.short_sale, "probate": s.probate,
+        "auction":   s.auction,
         "score": round(s.score, 3),
         "matched_terms": list(s.matched_terms),
     }
