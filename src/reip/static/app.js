@@ -1188,7 +1188,8 @@ function renderBuyBox(b) {
     contracting: 'bg-yellow/10 text-yellow border-yellow',
     crash:     'bg-red/10 text-red border-red',
   })[b.regime_label] || 'border-line text-muted';
-  return `
+  const climateBlock = b.climate ? renderClimateBlock(b.climate) : '';
+  return climateBlock + `
     <div class="grid grid-cols-3 gap-3">
       <div class="bg-bg rounded border border-line p-3">
         <div class="text-xs uppercase tracking-wide text-muted">Target price</div>
@@ -1234,6 +1235,38 @@ function renderBuyBox(b) {
   `;
 }
 
+function renderClimateBlock(c) {
+  const catColor = {
+    minimal:  'border-green text-green',
+    moderate: 'border-fg text-fg',
+    elevated: 'border-yellow text-yellow',
+    severe:   'border-red text-red',
+  }[c.category] || 'border-line text-muted';
+  const score = c.overall_score;
+  // Visual score bar
+  const barColor = score >= 75 ? 'bg-red' : score >= 50 ? 'bg-yellow' : score >= 20 ? 'bg-fg' : 'bg-green';
+  return `
+    <div class="bg-bg rounded border ${catColor.split(' ')[0]} p-3 mb-3">
+      <div class="flex items-baseline justify-between mb-2">
+        <div>
+          <span class="text-xs uppercase tracking-wide text-muted">Climate risk</span>
+          <span class="ml-2 px-2 py-0.5 rounded border ${catColor} text-xs font-semibold uppercase">${c.category}</span>
+        </div>
+        <div class="text-2xl font-bold ${catColor.split(' ')[1]}">${score}<span class="text-xs text-muted font-normal">/100</span></div>
+      </div>
+      <div class="h-2 bg-card rounded overflow-hidden">
+        <div class="h-full ${barColor}" style="width: ${score}%"></div>
+      </div>
+      <div class="grid grid-cols-3 gap-2 mt-2 text-xs text-muted">
+        <div>Primary risk: <span class="text-fg uppercase">${c.primary_risk}</span></div>
+        <div>5y NFIP claims: <span class="text-fg">${Math.round(c.flood_claims_5y).toLocaleString()}</span></div>
+        <div>5y NFIP paid: <span class="text-fg">$${Math.round(c.flood_paid_5y).toLocaleString()}</span></div>
+      </div>
+      ${c.notes && c.notes.length ? `<div class="text-xs text-muted mt-2 space-y-1">${c.notes.map(n => `<div>• ${escapeHtml(n)}</div>`).join('')}</div>` : ''}
+    </div>
+  `;
+}
+
 function closeBuyBox() {
   document.getElementById('buyboxModal').classList.add('hidden');
   LAST_BUYBOX = null;
@@ -1242,6 +1275,7 @@ function closeBuyBox() {
 function stressFromBuyBox() {
   if (!LAST_BUYBOX) return;
   const d = LAST_BUYBOX.typical_deal;
+  const zip = LAST_BUYBOX.zip;
   // Switch to Stress tab and fill inputs
   go('stress');
   closeBuyBox();
@@ -1257,11 +1291,12 @@ function stressFromBuyBox() {
     $('stTax').value   = d.property_tax_rate;
     $('stHoa').value   = 0;
     $('stARV').value   = LAST_BUYBOX.arv_trend_12mo || '';
+    if ($('stZip')) $('stZip').value = zip || '';
     if (d.state) {
       const sel = $('stState');
       if ([...sel.options].some(o => o.value === d.state)) sel.value = d.state;
     }
-    runStress();   // auto-fire
+    runStress();   // auto-fire (with climate overlay since zip is set)
   }, 50);
 }
 
@@ -1398,6 +1433,12 @@ function renderPipeline() {
     const worst = d.stress?.scenarios?.[2];
     const s = STATUS_META[d.status] || { icon: '?', label: d.status, color: '' };
     const selected = PIPE_SELECTED.has(d.id);
+    // Climate badge: comes from d.stress.climate if the deal was stress-tested with a zip
+    const c = d.stress?.climate;
+    const cBadge = c ? (() => {
+      const cls = {minimal:'text-green',moderate:'text-fg',elevated:'text-yellow',severe:'text-red'}[c.category] || 'text-muted';
+      return `<span class="${cls}" title="${escapeHtml((c.notes||[]).join(' · '))}">${c.overall_score}</span>`;
+    })() : '<span class="text-muted">—</span>';
     return `
       <tr class="border-t border-line hover:bg-bg cursor-pointer ${selected ? 'bg-bg' : ''}" onclick="openPipeDetail('${d.id}')">
         <td class="py-2 pl-3 pr-1" onclick="event.stopPropagation(); togglePipeSelect('${d.id}')">
@@ -1409,6 +1450,7 @@ function renderPipeline() {
         <td class="py-2 pr-3 text-right tabular-nums">${base ? fmtPct(base.cash_on_cash) : '—'}</td>
         <td class="py-2 pr-3 text-right tabular-nums">${worst ? fmtPct(worst.irr) : '—'}</td>
         <td class="py-2 pr-3 text-right tabular-nums">${d.stress?.price_to_green ? '$' + d.stress.price_to_green.toLocaleString() : '—'}</td>
+        <td class="py-2 pr-3 text-right tabular-nums font-semibold">${cBadge}</td>
         <td class="py-2 pr-3 text-xs text-muted">${formatRelative(d.updated_at)}</td>
       </tr>`;
   }).join('');
@@ -1423,6 +1465,7 @@ function renderPipeline() {
           <th class="text-right py-2 pr-3">Base CoC</th>
           <th class="text-right py-2 pr-3">Worst IRR</th>
           <th class="text-right py-2 pr-3">Walk-away $</th>
+          <th class="text-right py-2 pr-3" title="Climate risk score 0-100 (from FEMA NFIP)">Climate</th>
           <th class="text-right py-2 pr-3">Updated</th>
         </tr>
       </thead>
@@ -1571,6 +1614,7 @@ function initStress() {
 }
 
 async function runStress() {
+  const zip = ($('stZip')?.value || '').trim() || null;
   const body = {
     purchase_price: +$('stPrice').value,
     monthly_rent:   +$('stRent').value,
@@ -1583,6 +1627,7 @@ async function runStress() {
     property_tax_rate: +$('stTax').value,
     hoa_monthly:    +$('stHoa').value || 0,
     state:          $('stState').value || null,
+    zip:            zip,
   };
   const host = $('stResultHost');
   host.innerHTML = spinnerHTML('Running base / stress / worst scenarios + price-to-green search…');
@@ -1625,8 +1670,15 @@ function renderStressResult(d) {
   const verdict = d.gate.verdict;
   const verdictColor = { GREEN: 'text-green border-green', YELLOW: 'text-yellow border-yellow', RED: 'text-red border-red' }[verdict] || 'text-fg border-line';
   const overlayLine = d.state_overlay_summary
-    ? `<div class="text-xs text-muted mt-1">Overlay: <span class="text-fg">${d.state_overlay_summary}</span></div>`
+    ? `<div class="text-xs text-muted mt-1">State overlay: <span class="text-fg">${d.state_overlay_summary}</span></div>`
     : (d.state ? `<div class="text-xs text-muted mt-1">No state overlay for ${d.state}.</div>` : '');
+  const climateLine = d.climate_overlay_summary
+    ? `<div class="text-xs text-muted mt-1">Climate overlay: <span class="text-fg">${escapeHtml(d.climate_overlay_summary)}</span></div>`
+    : '';
+  const climateBlock = d.climate ? renderClimateBlock(d.climate) : '';
+  // Post-tax IRR per scenario, when a tax bracket is selected
+  const taxBracket = $('stTaxBracket') ? +$('stTaxBracket').value : 0;
+  const postTaxBlock = taxBracket > 0 ? renderPostTaxIRR(d, taxBracket) : '';
 
   const scenRows = d.scenarios.map(s => {
     const deltaChips = Object.entries(s.deltas || {}).map(([k, v]) => {
@@ -1690,7 +1742,10 @@ function renderStressResult(d) {
         </div>
       </div>
       ${overlayLine}
+      ${climateLine}
     </div>
+    ${climateBlock}
+    ${postTaxBlock}
 
     <div class="bg-card rounded border border-line p-4 overflow-x-auto">
       <table class="w-full text-sm">
@@ -1722,6 +1777,54 @@ function renderStressResult(d) {
 
     ${priceLine}
   `;
+}
+
+function renderPostTaxIRR(d, taxBracket) {
+  // Approximate per-scenario post-tax IRR using the same shield formula
+  // as portfolio.aggregate. Server doesn't ship this on /api/stress yet
+  // because the stress endpoint doesn't take tax knobs — we compute it
+  // client-side from inputs we already have.
+  const a = d.assumptions || {};
+  const price = a.purchase_price || 0;
+  const rehab = a.rehab_cost || 0;
+  const landAlloc = 0.20;
+  const useful   = 27.5;
+  const depr = ((price + rehab) * (1 - landAlloc)) / useful;
+  const equity = price * (1 - (a.ltv || 0.75)) + price * 0.03 + rehab;
+  const rows = d.scenarios.map(s => {
+    const cf = s.cash_flow_y1 || 0;
+    // Active deduction: tax_owed = (cf - depr) × bracket (can be negative)
+    const taxOwed = (cf - depr) * taxBracket;
+    const postCF = cf - taxOwed;
+    const deltaCF = postCF - cf;
+    const irrPre = s.irr;
+    const irrPost = irrPre !== null && equity > 0 ? irrPre + deltaCF / equity : null;
+    return `
+      <tr class="border-b border-line">
+        <td class="py-2 pr-3 font-medium">${s.label}</td>
+        <td class="py-2 pr-3 text-right tabular-nums ${irrColor(irrPre)}">${fmtPct(irrPre)}</td>
+        <td class="py-2 pr-3 text-right tabular-nums ${irrColor(irrPost)}">${fmtPct(irrPost)}</td>
+        <td class="py-2 pr-3 text-right tabular-nums ${cf >= 0 ? 'text-green' : 'text-red'}">${(cf >= 0 ? '+' : '') + Math.round(cf).toLocaleString()}</td>
+        <td class="py-2 pr-3 text-right tabular-nums ${postCF >= 0 ? 'text-green' : 'text-red'}">${(postCF >= 0 ? '+' : '') + Math.round(postCF).toLocaleString()}</td>
+      </tr>`;
+  }).join('');
+  return `
+    <div class="bg-card rounded border border-line p-4">
+      <div class="text-xs uppercase tracking-wide text-muted mb-2">Post-tax view (${(taxBracket*100).toFixed(0)}% bracket, 20% land alloc, active deduction)</div>
+      <div class="text-xs text-muted mb-2">Annual depreciation: $${Math.round(depr).toLocaleString()} · Equity: $${Math.round(equity).toLocaleString()}. <span class="text-muted">For passive-loss limited investors, post-tax IRR is closer to pre-tax (loss suspends).</span></div>
+      <table class="w-full text-sm">
+        <thead class="text-xs uppercase tracking-wide text-muted">
+          <tr class="border-b border-line">
+            <th class="text-left py-2 pr-3">Scenario</th>
+            <th class="text-right py-2 pr-3">IRR pre-tax</th>
+            <th class="text-right py-2 pr-3">IRR post-tax</th>
+            <th class="text-right py-2 pr-3">CF/yr pre</th>
+            <th class="text-right py-2 pr-3">CF/yr post</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 function fmtPct(x) {

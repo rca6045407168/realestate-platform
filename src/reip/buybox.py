@@ -21,6 +21,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Optional
 
 from . import projection as proj_mod
+from . import climate as climate_mod
 from .store import connect
 
 
@@ -94,6 +95,8 @@ class BuyBox:
     regime_label: str
     regime_score: float
     vacancy_used: float
+    # ---- climate exposure (full ClimateScore dict if scored, else None) ----
+    climate: Optional[dict] = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -191,6 +194,33 @@ def derive(con, zip_code: str, archetype_hint: Optional[str] = None) -> Optional
     target_cap_rate = 0.07
     floor_cap_rate  = 0.06
 
+    # Look up the real state-level property tax rate. Falls back to 1.2%
+    # if state is unknown or the table is empty. (property_tax_state was
+    # already loaded but the buy-box was hardcoded to 1.2% — fixed now.)
+    state_tax_rate = 0.012
+    if state:
+        r = con.execute(
+            "SELECT effective_rate_pct FROM property_tax_state WHERE state = ? LIMIT 1",
+            [state],
+        ).fetchone()
+        if r and r[0] is not None:
+            state_tax_rate = round(float(r[0]) / 100.0, 4)
+
+    # Score the climate exposure for this zip
+    climate_score = climate_mod.score_zip(con, str(z).zfill(5), state)
+
+    # Climate-aware insurance baseline: bump default 1.2%-of-price by the
+    # severity. A severe-climate zip should not be underwritten at the
+    # national-average insurance line item.
+    insurance_pct_of_price = 0.012
+    if climate_score:
+        if climate_score.category == "severe":
+            insurance_pct_of_price = 0.025   # FL post-Ian-grade premium
+        elif climate_score.category == "elevated":
+            insurance_pct_of_price = 0.018
+        elif climate_score.category == "moderate":
+            insurance_pct_of_price = 0.014
+
     # Build the "typical deal" — feeds the stress test directly.
     typical_deal = {
         "purchase_price": target_price_mid,
@@ -199,8 +229,8 @@ def derive(con, zip_code: str, archetype_hint: Optional[str] = None) -> Optional
         "vacancy":        round(max(0.05, vacancy_used), 3),
         "mortgage_rate":  0.07,
         "ltv":            0.75,
-        "insurance_annual": round(target_price_mid * 0.012),  # 1.2% of price ≈ national avg
-        "property_tax_rate": 0.012,
+        "insurance_annual": round(target_price_mid * insurance_pct_of_price),
+        "property_tax_rate": state_tax_rate,
         "state":          state,
     }
 
@@ -217,6 +247,18 @@ def derive(con, zip_code: str, archetype_hint: Optional[str] = None) -> Optional
     notes.append(f"Target SFR {DEFAULT_BEDS}/{DEFAULT_BATHS}, {DEFAULT_SQFT_LOW}–{DEFAULT_SQFT_HIGH} sqft. "
                  f"Light rehab band assumes cosmetic; heavy assumes a value-add BRRRR.")
 
+    # Climate notes — pulled into the buy-box note list so they surface
+    # in chat answers and the UI buy-box modal.
+    if climate_score:
+        if climate_score.category in ("elevated", "severe"):
+            notes.append(
+                f"Climate risk: {climate_score.category.upper()} ({climate_score.overall_score}/100). "
+                f"Primary risk: {climate_score.primary_risk}. "
+                f"Insurance baseline adjusted to {insurance_pct_of_price*100:.1f}% of price (vs 1.2% inland)."
+            )
+        for n in climate_score.notes[:2]:
+            notes.append(n)
+
     return BuyBox(
         zip=str(z).zfill(5), state=state, cbsa_code=cbsa_code, cbsa_name=cbsa_name,
         archetype_hint=archetype_hint,
@@ -230,6 +272,7 @@ def derive(con, zip_code: str, archetype_hint: Optional[str] = None) -> Optional
         typical_deal=typical_deal,
         regime_label=regime_label, regime_score=regime_score,
         vacancy_used=round(vacancy_used, 4),
+        climate=climate_mod.to_dict(climate_score) if climate_score else None,
         notes=notes,
     )
 

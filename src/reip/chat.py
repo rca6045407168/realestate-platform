@@ -224,6 +224,7 @@ TOOLS = [
                 "insurance_annual":   {"type": "number", "default": 1500},
                 "hoa_monthly":        {"type": "number", "default": 0},
                 "state":              {"type": "string", "description": "2-letter state code — drives state overlay (FL/TX/CA/OH/MI/...)"},
+                "zip":                {"type": "string", "description": "5-digit ZIP — enables climate amplification (FEMA NFIP-driven)"},
             },
             "required": ["purchase_price", "monthly_rent"],
         },
@@ -340,6 +341,7 @@ def _execute(name: str, args: dict) -> Any:
 
     if name == "stress_test":
         from . import stress as stress_mod
+        from . import climate as climate_mod
         a = underwriting.Assumptions(
             purchase_price=args["purchase_price"],
             rehab_cost=args.get("rehab_cost", 0),
@@ -352,7 +354,17 @@ def _execute(name: str, args: dict) -> Any:
             insurance_annual=args.get("insurance_annual", 1500.0),
             hoa_monthly=args.get("hoa_monthly", 0.0),
         )
-        return stress_mod.stress_test(a, state=args.get("state"))
+        # Auto-score climate if a zip was provided
+        climate_dict = None
+        if args.get("zip"):
+            cs = climate_mod.score_zip(con, args["zip"], args.get("state"))
+            if cs:
+                climate_dict = climate_mod.to_dict(cs)
+        out = stress_mod.stress_test(a, state=args.get("state"),
+                                       climate_score=climate_dict)
+        if climate_dict:
+            out["climate"] = climate_dict
+        return out
 
     if name == "parse_remarks":
         s = remarks_mod.parse(args["text"])

@@ -278,7 +278,8 @@ def _suggest_mitigations(base, stress, worst) -> list[str]:
 
 # --- price-to-green bisect --------------------------------------------------
 
-def _price_to_green(base_a: uw.Assumptions, state: Optional[str]) -> Optional[float]:
+def _price_to_green(base_a: uw.Assumptions, state: Optional[str],
+                     extra_stress: Optional[dict] = None) -> Optional[float]:
     """Bisect on purchase_price to find the ceiling that lifts the deal to GREEN.
     Returns None if even pricing at 30% of asked still doesn't get there."""
     lo, hi = base_a.purchase_price * 0.30, base_a.purchase_price
@@ -286,7 +287,7 @@ def _price_to_green(base_a: uw.Assumptions, state: Optional[str]) -> Optional[fl
     for _ in range(28):
         mid = (lo + hi) / 2
         trial = uw.Assumptions(**{**base_a.__dict__, "purchase_price": mid})
-        scenarios = _run_all(trial, state)
+        scenarios = _run_all(trial, state, extra_stress=extra_stress)
         if _evaluate_gate(scenarios).verdict == "GREEN":
             best = mid
             lo = mid           # try going higher
@@ -297,35 +298,93 @@ def _price_to_green(base_a: uw.Assumptions, state: Optional[str]) -> Optional[fl
 
 # --- top-level entry --------------------------------------------------------
 
-def _run_all(a: uw.Assumptions, state: Optional[str]) -> list[dict]:
+def _apply_climate_bumps(deltas: dict, bumps: dict) -> dict:
+    """Stack climate bonuses onto an existing stress/worst delta dict."""
+    if not bumps:
+        return deltas
+    out = dict(deltas)
+    if bumps.get("insurance_mult_bonus"):
+        out["insurance_mult"] = out.get("insurance_mult", 1.0) * (1 + bumps["insurance_mult_bonus"])
+    if bumps.get("rehab_mult_bonus"):
+        out["rehab_mult"] = out.get("rehab_mult", 1.0) * (1 + bumps["rehab_mult_bonus"])
+    if bumps.get("exit_cap_add_bonus"):
+        out["exit_cap_add"] = out.get("exit_cap_add", 0.0) + bumps["exit_cap_add_bonus"]
+    return out
+
+
+def _run_all(a: uw.Assumptions, state: Optional[str],
+              extra_stress: Optional[dict] = None) -> list[dict]:
     state_overlay = _STATE_OVERLAYS.get((state or "").upper(), {})
+    stress_deltas = _apply_climate_bumps(_STRESS_DELTAS, extra_stress or {})
+    worst_deltas  = _apply_climate_bumps(_WORST_DELTAS,  extra_stress or {})
     base_a = _apply_overlay(a, state_overlay)
-    stress_a = _apply_overlay(a, _compose(state_overlay, _STRESS_DELTAS))
-    worst_a = _apply_overlay(a, _compose(state_overlay, _WORST_DELTAS))
+    stress_a = _apply_overlay(a, _compose(state_overlay, stress_deltas))
+    worst_a = _apply_overlay(a, _compose(state_overlay, worst_deltas))
     return [
         _scenario("base",   "Base case",   base_a,   base_a, state_overlay),
-        _scenario("stress", "Stress case", stress_a, base_a, _compose(state_overlay, _STRESS_DELTAS)),
-        _scenario("worst",  "Worst case",  worst_a,  base_a, _compose(state_overlay, _WORST_DELTAS)),
+        _scenario("stress", "Stress case", stress_a, base_a, _compose(state_overlay, stress_deltas)),
+        _scenario("worst",  "Worst case",  worst_a,  base_a, _compose(state_overlay, worst_deltas)),
     ]
 
 
 def stress_test(a: uw.Assumptions, state: Optional[str] = None,
-                include_price_to_green: bool = True) -> dict:
-    """Top-level: run all 3 scenarios + gate + price-to-green search."""
-    scenarios = _run_all(a, state)
+                include_price_to_green: bool = True,
+                climate_score: Optional[dict] = None) -> dict:
+    """Top-level: run all 3 scenarios + gate + price-to-green search.
+
+    If `climate_score` is provided (a dict from climate.ClimateScore.to_dict()),
+    the stress + worst scenarios get climate-amplified — severe-climate zips
+    see additional insurance and rehab stress on top of the state overlay.
+    """
+    extra = _climate_stress_bumps(climate_score)
+    scenarios = _run_all(a, state, extra_stress=extra)
     gate = _evaluate_gate(scenarios)
     out = {
         "state": (state or "").upper() or None,
         "state_overlay_applied": (state or "").upper() in _STATE_OVERLAYS,
         "state_overlay_summary": _state_overlay_summary(state),
+        "climate_overlay_applied": bool(extra),
+        "climate_overlay_summary": _climate_overlay_summary(climate_score, extra),
         "assumptions": a.__dict__,
         "scenarios": scenarios,
         "gate": {"verdict": gate.verdict, "reasons": gate.reasons,
                   "mitigations": gate.mitigations},
     }
     if include_price_to_green and gate.verdict != "GREEN":
-        out["price_to_green"] = _price_to_green(a, state)
+        out["price_to_green"] = _price_to_green(a, state, extra_stress=extra)
     return out
+
+
+def _climate_stress_bumps(climate_score: Optional[dict]) -> dict:
+    """Translate a climate score dict into extra stress/worst deltas."""
+    if not climate_score:
+        return {}
+    s = climate_score.get("overall_score") or 0
+    if s >= 75:
+        return {"insurance_mult_bonus": 0.25, "rehab_mult_bonus": 0.15,
+                 "exit_cap_add_bonus": 0.005}
+    if s >= 50:
+        return {"insurance_mult_bonus": 0.15, "rehab_mult_bonus": 0.08,
+                 "exit_cap_add_bonus": 0.003}
+    if s >= 20:
+        return {"insurance_mult_bonus": 0.08, "rehab_mult_bonus": 0.03,
+                 "exit_cap_add_bonus": 0.001}
+    return {}
+
+
+def _climate_overlay_summary(climate_score: Optional[dict], extra: dict) -> Optional[str]:
+    if not extra or not climate_score:
+        return None
+    cat = climate_score.get("category", "?")
+    risk = climate_score.get("primary_risk", "?")
+    bits = []
+    if extra.get("insurance_mult_bonus"):
+        bits.append(f"insurance +{extra['insurance_mult_bonus']*100:.0f}%")
+    if extra.get("rehab_mult_bonus"):
+        bits.append(f"rehab +{extra['rehab_mult_bonus']*100:.0f}%")
+    if extra.get("exit_cap_add_bonus"):
+        bits.append(f"exit-cap +{extra['exit_cap_add_bonus']*10000:.0f}bps")
+    return f"{cat} {risk} climate: stress/worst bumped — " + ", ".join(bits)
 
 
 def _state_overlay_summary(state: Optional[str]) -> Optional[str]:

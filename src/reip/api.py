@@ -32,6 +32,7 @@ from . import underwriting as uw_mod
 from . import recommendation as rec_mod
 from . import stress as stress_mod
 from . import buybox as buybox_mod
+from . import climate as climate_mod
 from . import tax as tax_mod
 from . import portfolio as portfolio_mod
 from . import property_ingest as ingest_mod
@@ -173,6 +174,7 @@ class StressRequest(BaseModel):
     hoa_monthly: float = 0.0
     hold_years: int = 5
     state: Optional[str] = None
+    zip: Optional[str] = None    # if provided, climate auto-scored from FEMA NFIP
 
 
 # ---- routes -----------------------------------------------------------------
@@ -325,6 +327,27 @@ def portfolio_aggregate(req: PortfolioRequest):
     return _sanitize(portfolio_mod.aggregate(req.deals, tax=t))
 
 
+@app.get("/api/zips/{zip_code}/climate")
+def zip_climate(zip_code: str, state: Optional[str] = None):
+    """Per-zip climate risk: 0-100 score, category, primary risk type,
+    NFIP claim history, and hurricane/wildfire flags."""
+    con = connect()
+    # Look up the state if not provided
+    if state is None:
+        r = con.execute(
+            "SELECT c.state FROM zip_county_xwalk z LEFT JOIN county_cbsa_xwalk c "
+            "ON c.fips_county = z.fips_county WHERE z.zip = ? LIMIT 1",
+            [str(zip_code).zfill(5)],
+        ).fetchone()
+        if r and r[0]:
+            from . import buybox as _bb
+            state = _bb._to_state_code(r[0])
+    c = climate_mod.score_zip(con, zip_code, state)
+    if not c:
+        raise HTTPException(404, f"No data for zip {zip_code}")
+    return _sanitize(climate_mod.to_dict(c))
+
+
 @app.get("/api/zips/{zip_code}/arv")
 def zip_arv(zip_code: str):
     """Trend-based ARV across multiple horizons. Comp-based ARV is on the
@@ -365,12 +388,12 @@ def zip_buybox(zip_code: str):
 @app.post("/api/stress")
 def stress(req: StressRequest):
     """Multi-scenario stress test on a deal: base / stress / worst with
-    state-aware overlays (FL hurricane, TX tax, CA rent cap, rust-belt rehab).
+    state-aware overlays (FL hurricane, TX tax, CA rent cap, rust-belt rehab)
+    + climate-aware amplification (FEMA NFIP damage history).
 
     Returns scenario-by-scenario IRR, CoC, DSCR, break-even occupancy,
-    a GREEN/YELLOW/RED gate with concrete mitigations, and `price_to_green`
-    (the price ceiling at which the deal upgrades to GREEN — i.e. negotiate
-    target or walk)."""
+    a GREEN/YELLOW/RED gate with concrete mitigations, `price_to_green`
+    (the negotiate-or-walk price), and the climate score if a zip was passed."""
     a = uw_mod.Assumptions(
         purchase_price=req.purchase_price, rehab_cost=req.rehab_cost,
         arv=req.arv, monthly_rent=req.monthly_rent,
@@ -380,7 +403,18 @@ def stress(req: StressRequest):
         mortgage_rate=req.mortgage_rate, ltv=req.ltv,
         hold_years=req.hold_years,
     )
-    return _sanitize(stress_mod.stress_test(a, state=req.state))
+    # If the caller passed a zip, attach the climate score so the stress
+    # test amplifies worst-case for severe-climate exposure.
+    climate_dict = None
+    if req.zip:
+        con = connect()
+        c = climate_mod.score_zip(con, req.zip, req.state)
+        if c:
+            climate_dict = climate_mod.to_dict(c)
+    out = stress_mod.stress_test(a, state=req.state, climate_score=climate_dict)
+    if climate_dict:
+        out["climate"] = climate_dict
+    return _sanitize(out)
 
 
 @app.post("/api/underwritings/mitigations")

@@ -370,6 +370,20 @@
             <span class="text-muted text-xs">HOA / mo ($)</span>
             <input id="stHoa" type="number" value="0" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
           </label>
+          <label class="block">
+            <span class="text-muted text-xs">ZIP (optional — enables climate overlay)</span>
+            <input id="stZip" type="text" placeholder="e.g. 33908" maxlength="5"
+              class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1 font-mono">
+          </label>
+          <label class="block">
+            <span class="text-muted text-xs">Tax bracket (post-tax IRR)</span>
+            <select id="stTaxBracket" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
+              <option value="0">no post-tax (pre-tax only)</option>
+              <option value="0.22">22% (mid earner)</option>
+              <option value="0.32" selected>32% (high earner)</option>
+              <option value="0.37">37% (top bracket)</option>
+            </select>
+          </label>
           <label class="block col-span-2">
             <span class="text-muted text-xs">State (drives overlay)</span>
             <select id="stState" class="w-full bg-bg border border-line rounded px-2 py-1.5 mt-1">
