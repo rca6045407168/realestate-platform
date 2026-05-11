@@ -93,6 +93,10 @@ class MSARow(BaseModel):
     cashflow_score: Optional[float] = None
     total_return_score: Optional[float] = None
     completeness: Optional[float] = None
+    # Empirical stability from FHFA HPI 1985-now (computed on first call, cached)
+    stability_tier: Optional[str] = None       # Boring / Standard / Volatile / Boom-Bust
+    historical_max_dd_pct: Optional[float] = None
+    historical_ttr_months: Optional[int] = None
 
 
 class UnderwriteRequest(BaseModel):
@@ -196,6 +200,7 @@ def _scored_msas() -> pd.DataFrame:
 @app.get("/api/msas")
 def list_msas(
     archetype: Optional[str] = None,
+    stability: Optional[str] = None,
     min_pop: int = 250_000,
     sort_by: str = Query("total", pattern="^(total|appreciation|cashflow)$"),
     limit: int = 100,
@@ -209,6 +214,15 @@ def list_msas(
     sort_col = {"total": "total_return_score", "appreciation": "appreciation_score",
                 "cashflow": "cashflow_score"}[sort_by]
     df = df.sort_values(sort_col, ascending=False).head(limit)
+    # Attach empirical stability (FHFA HPI 1985-now)
+    con = connect()
+    stability_panel = strategy_mod.compute_stability_panel(con)
+    df["cbsa_code"] = df["cbsa_code"].astype(str)
+    df["stability_tier"]        = df["cbsa_code"].map(lambda c: (stability_panel.get(c) or {}).get("tier"))
+    df["historical_max_dd_pct"] = df["cbsa_code"].map(lambda c: (stability_panel.get(c) or {}).get("max_dd_pct"))
+    df["historical_ttr_months"] = df["cbsa_code"].map(lambda c: (stability_panel.get(c) or {}).get("ttr_months"))
+    if stability:
+        df = df[df["stability_tier"] == stability]
     cols = [c for c in MSARow.model_fields if c in df.columns]
     return [_clean(r) for r in df[cols].to_dict("records")]
 

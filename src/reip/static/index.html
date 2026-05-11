@@ -138,6 +138,14 @@
         <option>Resource & Niche</option>
         <option>Mixed</option>
       </select>
+      <label class="text-sm text-muted" title="Historical max drawdown tier (FHFA HPI 1985-now)">Stability</label>
+      <select id="stabilityFilter" class="bg-bg border border-line rounded px-2 py-1 text-sm">
+        <option value="">All</option>
+        <option value="Boring">Boring (DD ≥ -6%)</option>
+        <option value="Standard">Standard (-6% to -30%)</option>
+        <option value="Volatile">Volatile (-30% to -45%)</option>
+        <option value="Boom-Bust">Boom-Bust (worse than -45%)</option>
+      </select>
       <label class="text-sm text-muted">Min pop</label>
       <input id="minPop" type="number" value="250000" class="bg-bg border border-line rounded px-2 py-1 text-sm w-28">
       <label class="text-sm text-muted">Top N</label>
@@ -346,6 +354,7 @@
       </div>
       <div class="flex gap-2 flex-wrap items-center pt-2 border-t border-line">
         <button id="buyboxRunStress" class="px-3 py-2 rounded bg-accent text-bg font-medium hover:opacity-90">⚡ Stress-test typical deal</button>
+        <button id="buyboxSaveWatchlist" class="px-3 py-2 rounded border border-line hover:border-accent text-sm" title="Save the typical-deal as a 'researching' pipeline entry without running stress">+ Watchlist</button>
         <a id="buyboxRedfin" target="_blank" rel="noreferrer" class="px-3 py-2 rounded border border-line hover:border-accent text-sm">Redfin ↗</a>
         <a id="buyboxZillow" target="_blank" rel="noreferrer" class="px-3 py-2 rounded border border-line hover:border-accent text-sm">Zillow ↗</a>
         <button onclick="closeBuyBox()" class="ml-auto text-xs text-muted hover:text-fg">Close</button>

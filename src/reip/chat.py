@@ -182,6 +182,31 @@ TOOLS = [
         },
     },
     {
+        "name": "strategy_backtest",
+        "description": (
+            "Run the 50-year empirical strategy analyses live against current FHFA HPI + "
+            "Zillow ZORI data. Returns one of: 'regimes' (8 housing cycles 1985-2024 with "
+            "best/worst metro per regime), 'drawdowns' (worst 15 + shallowest 15 metros), "
+            "'momentum' (3y→3y quartile transition matrix, 15K transition test), "
+            "'strategies' (34-year backtest of 4 archetype portfolios), or 'rent_yield' "
+            "(top metros by total return 2015-2024). Use when the user asks 'what's worked "
+            "historically', 'show me the worst drawdowns', 'is momentum real', 'how have "
+            "the archetypes performed', or any question that needs empirical evidence from "
+            "the long historical record. The full report is also documented in docs/STRATEGY.md."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["regimes", "drawdowns", "momentum", "strategies", "rent_yield"],
+                    "description": "Which analysis to fetch. Pick the most relevant one to the user's question.",
+                },
+            },
+            "required": ["section"],
+        },
+    },
+    {
         "name": "buy_box",
         "description": (
             "Derive a buy-box for a specific US zip code: target price band (80%–110% "
@@ -332,6 +357,18 @@ def _execute(name: str, args: dict) -> Any:
         ).df()
         return rows.to_dict("records")
 
+    if name == "strategy_backtest":
+        from . import strategy as strat
+        section = args["section"]
+        fn = {
+            "regimes":    strat.regime_decomposition,
+            "drawdowns":  strat.drawdown_panel,
+            "momentum":   strat.momentum_persistence,
+            "strategies": strat.strategy_backtest,
+            "rent_yield": strat.rent_yield_panel,
+        }[section]
+        return {section: fn(con)}
+
     if name == "buy_box":
         from . import buybox as buybox_mod
         b = buybox_mod.derive(con, args["zip"])
@@ -459,7 +496,9 @@ Recommendation gate is the moral center. GREEN requires DSCR ≥ 1.30×, refi ap
 
 ## Tools
 
-You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+
+Use `strategy_backtest` when the user asks for empirical historical evidence — e.g. "what's the worst drawdown ever in X market", "show me the regime decomposition", "is momentum real in real estate", "how did Sun Belt compare to CA Coastal over 30 years". Pick the right section.
 
 ## Empirical strategy defaults (from 50-year FHFA HPI + ZORI backtests)
 

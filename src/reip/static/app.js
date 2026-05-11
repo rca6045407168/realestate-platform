@@ -311,10 +311,12 @@ let MSAS = [];
 async function loadDashboard() {
   const sortBy = $('sortBy').value;
   const archetype = $('archetypeFilter').value;
+  const stability = $('stabilityFilter')?.value || '';
   const minPop = +$('minPop').value || 0;
   const limit = +$('limit').value || 50;
   const qs = new URLSearchParams({ sort_by: sortBy, min_pop: minPop, limit });
   if (archetype) qs.set('archetype', archetype);
+  if (stability) qs.set('stability', stability);
   $('msaTableHost').innerHTML = spinnerHTML('Scoring MSAs…');
   try {
     MSAS = await api('/msas?' + qs);
@@ -336,9 +338,21 @@ async function loadDashboard() {
     + '<th class="text-right">Appr</th>'
     + '<th class="text-right">Cash</th>'
     + '<th class="text-right">Total</th>'
+    + '<th title="Historical max drawdown from FHFA HPI 1985-now">Stability</th>'
     + '<th>Cmp</th>'
     + '</tr></thead><tbody>';
   for (const m of MSAS) {
+    const tier = m.stability_tier;
+    const tierColor = {
+      'Boring':   'text-green',
+      'Standard': 'text-fg',
+      'Volatile': 'text-yellow',
+      'Boom-Bust':'text-red',
+    }[tier] || 'text-muted';
+    const ddText = m.historical_max_dd_pct != null ? `${m.historical_max_dd_pct.toFixed(0)}%` : '—';
+    const stabilityCell = tier
+      ? `<span class="${tierColor}" title="Max historical DD: ${ddText}, recovery: ${m.historical_ttr_months ? Math.round(m.historical_ttr_months/12) + 'y' : '?'}">${tier} (${ddText})</span>`
+      : '<span class="text-muted">—</span>';
     html += `<tr onclick="openMsaListings('${m.cbsa_code}', '${(m.cbsa_name||'').replace(/'/g, "\\'")}')" title="Click to see live listings in this metro">
       <td class="text-muted">${m.cbsa_code}</td>
       <td>${m.cbsa_name || ''}</td>
@@ -351,6 +365,7 @@ async function loadDashboard() {
       <td class="text-right num ${scoreClass(m.appreciation_score)}">${scoreFmt(m.appreciation_score)}</td>
       <td class="text-right num ${scoreClass(m.cashflow_score)}">${scoreFmt(m.cashflow_score)}</td>
       <td class="text-right num ${scoreClass(m.total_return_score)}">${scoreFmt(m.total_return_score)}</td>
+      <td class="text-xs">${stabilityCell}</td>
       <td><div class="w-20 h-2 bg-line rounded overflow-hidden"><div class="h-full bg-accent" style="width:${(m.completeness||0)*100}%"></div></div></td>
     </tr>`;
   }
@@ -359,8 +374,8 @@ async function loadDashboard() {
 }
 
 // Wire dashboard filter changes
-['sortBy', 'archetypeFilter', 'minPop', 'limit'].forEach(id => {
-  document.addEventListener('DOMContentLoaded', () => $(id).addEventListener('input', loadDashboard));
+['sortBy', 'archetypeFilter', 'stabilityFilter', 'minPop', 'limit'].forEach(id => {
+  document.addEventListener('DOMContentLoaded', () => $(id)?.addEventListener('input', loadDashboard));
 });
 
 // ---- MSA → LIVE LISTINGS jump ------------------------------------------
@@ -1537,6 +1552,37 @@ function closeBuyBox() {
   LAST_BUYBOX = null;
 }
 
+function watchlistFromBuyBox() {
+  if (!LAST_BUYBOX) return;
+  // Save the typical_deal as a "researching" pipeline entry with no stress.
+  // Lets investors track a zip they like before they commit to running stress.
+  const d = LAST_BUYBOX.typical_deal;
+  const label = `${LAST_BUYBOX.zip} · ${LAST_BUYBOX.cbsa_name || ''}`.trim();
+  const dealInputs = {
+    purchase_price:   d.purchase_price,
+    monthly_rent:     d.monthly_rent,
+    rehab_cost:       d.rehab_cost,
+    mortgage_rate:    d.mortgage_rate,
+    ltv:              d.ltv,
+    vacancy:          d.vacancy,
+    insurance_annual: d.insurance_annual,
+    property_tax_rate: d.property_tax_rate,
+    state:            d.state,
+    zip:              LAST_BUYBOX.zip,
+  };
+  const beforeCount = DEALS.length;
+  const deal = newDealFromStress(dealInputs, null, { status: 'researching', label });
+  const wasUpdated = DEALS.length === beforeCount;
+  const btn = document.getElementById('buyboxSaveWatchlist');
+  if (btn) {
+    btn.textContent = wasUpdated ? '✓ Already watching' : '✓ Watching — open Pipeline';
+    btn.classList.remove('hover:border-accent');
+    btn.classList.add('border-green', 'text-green');
+    btn.onclick = () => { closeBuyBox(); go('pipeline'); };
+  }
+}
+window.watchlistFromBuyBox = watchlistFromBuyBox;
+
 function stressFromBuyBox() {
   if (!LAST_BUYBOX) return;
   // Snapshot EVERYTHING we need before closing — closeBuyBox() nulls
@@ -2248,6 +2294,7 @@ function initPipelineHandlers() {
     if (e.target.id === 'buyboxModal') closeBuyBox();
   });
   document.getElementById('buyboxRunStress')?.addEventListener('click', stressFromBuyBox);
+  document.getElementById('buyboxSaveWatchlist')?.addEventListener('click', watchlistFromBuyBox);
 }
 
 // ---- Data freshness badge -----------------------------------------------

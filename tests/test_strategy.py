@@ -101,3 +101,55 @@ def test_endpoint_section_filters(con):
     assert r.status_code == 200
     d = r.json()
     assert set(d.keys()) == {"regimes", "drawdowns", "momentum", "strategies", "rent_yield"}
+
+
+def test_stability_panel_assigns_tiers(con):
+    """Every metro with enough data gets one of 4 tiers."""
+    from reip import strategy
+    panel = strategy.compute_stability_panel(con)
+    assert len(panel) > 100
+    tiers = {v["tier"] for v in panel.values()}
+    assert tiers <= {"Boring", "Standard", "Volatile", "Boom-Bust"}
+    # Pittsburgh historically: should be Boring
+    pit_codes = [c for c, v in panel.items() if v["max_dd_pct"] > -2.5]
+    # At least Pittsburgh + Springfield IL show up in <-2.5% DD
+    assert len(pit_codes) >= 1
+
+
+def test_msa_endpoint_carries_stability_tier(con):
+    """The /api/msas response should include stability columns now."""
+    from fastapi.testclient import TestClient
+    from reip.api import app
+    client = TestClient(app)
+    r = client.get("/api/msas?limit=20")
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) > 0
+    # Some rows should have a stability tier (not all, since the panel
+    # only covers metros with FHFA HPI history)
+    with_tier = [m for m in rows if m.get("stability_tier")]
+    assert len(with_tier) > 0
+
+
+def test_msa_endpoint_stability_filter(con):
+    """Filter ?stability=Boring should return only Boring-tier metros."""
+    from fastapi.testclient import TestClient
+    from reip.api import app
+    client = TestClient(app)
+    r = client.get("/api/msas?stability=Boring&limit=20")
+    assert r.status_code == 200
+    rows = r.json()
+    # Either empty (no Boring in top metros) or all match
+    for m in rows:
+        assert m["stability_tier"] == "Boring"
+
+
+def test_chat_strategy_backtest_tool_executes():
+    """The chat tool should execute and return real data."""
+    from reip import chat
+    out = chat._execute("strategy_backtest", {"section": "strategies"})
+    assert "strategies" in out
+    strategies = out["strategies"]
+    assert len(strategies) == 4
+    names = {s["strategy"] for s in strategies}
+    assert names == {"All-Weather", "CA Coastal", "Sun Belt Growth", "Heartland Yield"}

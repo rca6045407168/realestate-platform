@@ -369,3 +369,48 @@ def full_report(con) -> dict:
         "strategies":  strategy_backtest(con),
         "rent_yield":  rent_yield_panel(con),
     }
+
+
+# ---- per-MSA stability tier ------------------------------------------------
+#
+# Derived from FHFA HPI 1985-now. Each metro gets one of:
+#   "Boring"     — historical max DD ≥ -6%  (Pittsburgh, Iowa metros)
+#   "Standard"   — between -6% and -30%
+#   "Volatile"   — -30% to -45%
+#   "Boom-Bust"  — worse than -45% (Merced, Vegas, Modesto, Stockton, Cape Coral)
+#
+# Plus the actual max-DD %, time-to-recover months. Cached for the
+# msa_score path — recomputing on every /api/msas call is wasteful.
+# Built lazily.
+
+_STABILITY_CACHE: dict[str, dict] = {}
+
+def compute_stability_panel(con) -> dict[str, dict]:
+    """Return {cbsa_code: {max_dd_pct, ttr_months, tier}} for every metro."""
+    if _STABILITY_CACHE:
+        return _STABILITY_CACHE
+    df = _quarterly_panel(con, since="1985-01-01")
+    out = {}
+    for cbsa, sub in df.groupby("cbsa_code"):
+        s = sub.set_index("period")["hpi"]
+        dd = _max_drawdown(s)
+        if dd is None or len(s) < 60:    # need ≥15 years
+            continue
+        ttr = _time_to_recover(s)
+        pct = round(dd * 100, 1)
+        if pct >= -6:
+            tier = "Boring"
+        elif pct >= -30:
+            tier = "Standard"
+        elif pct >= -45:
+            tier = "Volatile"
+        else:
+            tier = "Boom-Bust"
+        out[cbsa] = {"max_dd_pct": pct, "ttr_months": ttr, "tier": tier}
+    _STABILITY_CACHE.update(out)
+    return out
+
+
+def stability_for(con, cbsa_code: str) -> Optional[dict]:
+    """Return stability dict for a single CBSA, or None if no data."""
+    return compute_stability_panel(con).get(str(cbsa_code))
