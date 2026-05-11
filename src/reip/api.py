@@ -429,6 +429,29 @@ def strategy_backtest_endpoint(section: Optional[str] = None):
     return out
 
 
+@app.get("/api/macro")
+def macro_rates():
+    """Current macro rates the platform uses for rate-context (today's 30Y
+    mortgage, 10Y Treasury, fed funds rate). Sources: Freddie Mac PMMS for
+    MORTGAGE30US (weekly), FRED for the others (monthly/daily). Falls back
+    to last-known if any series is stale."""
+    con = connect()
+    out = {}
+    for sid, label in [("MORTGAGE30US", "mortgage_30y"),
+                        ("DGS10",         "treasury_10y"),
+                        ("FEDFUNDS",      "fed_funds")]:
+        try:
+            r = con.execute(
+                "SELECT period, value FROM fred_macro WHERE series_id = ? "
+                "ORDER BY period DESC LIMIT 1", [sid]
+            ).fetchone()
+            if r:
+                out[label] = {"value": float(r[1]), "as_of": str(r[0])}
+        except Exception:
+            pass
+    return out
+
+
 @app.get("/api/freshness")
 def data_freshness():
     """Surface what's most-recent in every key table the rankings depend on.

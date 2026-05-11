@@ -877,6 +877,85 @@ document.addEventListener('DOMContentLoaded', () => $('buyRefresh').addEventList
 
 // ---- Top Zips (nationwide) ---------------------------------------------
 
+// ---- Saved Top Zips views ----------------------------------------------
+//
+// LocalStorage CRUD on named filter presets. Investor saves their
+// preferred screen ("Boring + min IRR 15%") once, recalls from a
+// dropdown next time.
+
+const TZ_VIEWS_KEY = 'reip_topzip_views_v1';
+
+function _loadTzViews() {
+  try { return JSON.parse(localStorage.getItem(TZ_VIEWS_KEY) || '[]'); }
+  catch (e) { return []; }
+}
+function _saveTzViews(views) {
+  localStorage.setItem(TZ_VIEWS_KEY, JSON.stringify(views));
+}
+
+function _captureTzView() {
+  return {
+    state:        $('tzState')?.value || '',
+    cbsa:         $('tzCbsa')?.value || '',
+    sort:         $('tzSort')?.value || 'regime',
+    min_price:    $('tzMin')?.value  || '',
+    max_price:    $('tzMax')?.value  || '',
+    rate:         $('tzRate')?.value || '',
+    limit:        $('tzLimit')?.value || '',
+    stability:    $('tzStability')?.value || '',
+    diversify:    !!$('tzDiversify')?.checked,
+  };
+}
+
+function _applyTzView(v) {
+  const set = (id, val) => { if ($(id) && val !== undefined && val !== null) $(id).value = val; };
+  set('tzState', v.state); set('tzCbsa', v.cbsa); set('tzSort', v.sort);
+  set('tzMin', v.min_price); set('tzMax', v.max_price); set('tzRate', v.rate);
+  set('tzLimit', v.limit); set('tzStability', v.stability);
+  if ($('tzDiversify')) $('tzDiversify').checked = !!v.diversify;
+}
+
+function saveTzView() {
+  const name = prompt('Name for this view:', '');
+  if (!name) return;
+  const views = _loadTzViews().filter(v => v.name !== name);
+  views.unshift({ name, created_at: Date.now(), filters: _captureTzView() });
+  _saveTzViews(views.slice(0, 20));
+  renderTzViewsList();
+}
+
+function loadTzView(name) {
+  const v = _loadTzViews().find(x => x.name === name);
+  if (!v) return;
+  _applyTzView(v.filters);
+  loadTopZips();
+}
+
+function deleteTzView(name) {
+  if (!confirm(`Delete saved view "${name}"?`)) return;
+  _saveTzViews(_loadTzViews().filter(v => v.name !== name));
+  renderTzViewsList();
+}
+
+function renderTzViewsList() {
+  const host = document.getElementById('tzViewsList');
+  if (!host) return;
+  const views = _loadTzViews();
+  if (!views.length) {
+    host.innerHTML = '<span class="text-xs text-muted">No saved views yet</span>';
+    return;
+  }
+  host.innerHTML = views.map(v => `
+    <span class="inline-flex items-center gap-1 mr-2 mb-1 text-xs">
+      <button onclick="loadTzView('${v.name.replace(/'/g, "\\'")}')" class="px-2 py-1 rounded border border-line hover:border-accent">${escapeHtml(v.name)}</button>
+      <button onclick="deleteTzView('${v.name.replace(/'/g, "\\'")}')" class="text-muted hover:text-red" title="Delete">×</button>
+    </span>`).join('');
+}
+
+window.saveTzView = saveTzView;
+window.loadTzView = loadTzView;
+window.deleteTzView = deleteTzView;
+
 function _concentratedStatesFromPipeline(thresholdPct = 0.30) {
   // Compute states where the user has ≥thresholdPct of total equity.
   if (!DEALS.length) return [];
@@ -896,6 +975,7 @@ function _concentratedStatesFromPipeline(thresholdPct = 0.30) {
 }
 
 async function loadTopZips() {
+  renderTzViewsList();
   const params = new URLSearchParams({
     sort: $('tzSort').value,
     limit: $('tzLimit').value || '100',
@@ -1262,13 +1342,75 @@ async function loadStrategy() {
   const host = $('strategyHost');
   host.innerHTML = spinnerHTML('Running 50-year backtests against current FHFA HPI + ZORI data…');
   try {
-    const r = await fetch('/api/strategy/backtest');
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const d = await r.json();
-    host.innerHTML = renderStrategyReport(d);
+    // Fire backtest + (if pipeline exists) portfolio-resilience in parallel
+    const fetches = [fetch('/api/strategy/backtest')];
+    if (DEALS.length) {
+      const body = {
+        deals: DEALS,
+        tax_bracket: +($('pfBracket')?.value || 0.32),
+        land_allocation: +($('pfLandAlloc')?.value || 0.20),
+        deduction_against_ordinary: ($('pfActive')?.value || 'true') === 'true',
+      };
+      fetches.push(fetch('/api/portfolio/aggregate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+    }
+    const responses = await Promise.all(fetches);
+    if (!responses[0].ok) throw new Error(`HTTP ${responses[0].status}`);
+    const strategyData = await responses[0].json();
+    let pipelineCtx = null;
+    if (responses[1] && responses[1].ok) {
+      const pData = await responses[1].json();
+      pipelineCtx = pData.resilience;
+    }
+    host.innerHTML = (pipelineCtx ? renderPipelineHistoricalContext(pipelineCtx) : '')
+                    + renderStrategyReport(strategyData);
   } catch (e) {
     host.innerHTML = `<div class="bg-card border border-red rounded p-4 text-red text-sm">Error: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+function renderPipelineHistoricalContext(r) {
+  if (!r || r.resilience_score == null) return '';
+  const s = r.resilience_score;
+  const color = s >= 80 ? 'border-green text-green'
+              : s >= 60 ? 'border-line text-fg'
+              : s >= 40 ? 'border-yellow text-yellow'
+              : 'border-red text-red';
+  const ddPct = r.weighted_historical_max_dd_pct;
+  const recY = r.weighted_recovery_years;
+  const bench = r.benchmark || {};
+  const gap = r.gap_vs_benchmark_dd_pct;
+  return `
+    <div class="bg-card rounded border ${color.split(' ')[0]} p-5 mb-4">
+      <div class="text-xs uppercase tracking-wide text-muted mb-2">Your portfolio in historical context</div>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+        <div>
+          <div class="text-xs text-muted">Resilience score</div>
+          <div class="text-3xl font-bold ${color.split(' ')[1]}">${s}<span class="text-base text-muted font-normal">/100</span></div>
+        </div>
+        <div>
+          <div class="text-xs text-muted">Historical max DD</div>
+          <div class="text-2xl font-bold text-red">${ddPct != null ? ddPct.toFixed(1)+'%' : '—'}</div>
+        </div>
+        <div>
+          <div class="text-xs text-muted">Time to recover</div>
+          <div class="text-2xl font-bold text-yellow">${recY != null ? recY.toFixed(1)+' yrs' : '—'}</div>
+        </div>
+        <div>
+          <div class="text-xs text-muted">vs All-Weather benchmark</div>
+          <div class="text-2xl font-bold ${gap != null && gap > 0 ? 'text-green' : 'text-red'}">${gap != null ? (gap>0?'+':'')+gap+'pp' : '—'}</div>
+        </div>
+      </div>
+      <div class="text-sm text-fg mt-3">${escapeHtml(r.interpretation || '')}</div>
+      <div class="text-xs text-muted mt-2">
+        Read this as: if your current ${r.deals_mapped} mapped deal${r.deals_mapped===1?'':'s'} had existed in 2007,
+        you'd have seen a ${ddPct != null ? ddPct.toFixed(1)+'%' : '—'} drawdown and ~${recY != null ? recY.toFixed(1) : '—'}yr recovery.
+        The benchmark (${bench.name || '?'}) saw ${bench.max_dd_pct != null ? bench.max_dd_pct+'%' : '—'} / ${bench.recovery_years || '—'}yr.
+      </div>
+    </div>`;
 }
 
 function renderStrategyReport(d) {
@@ -2026,11 +2168,12 @@ async function runStress() {
     const data = await r.json();
     LAST_STRESS_RESULT = { inputs: body, result: data };
     host.innerHTML = renderStressResult(data)
-      + `<div class="bg-card border border-line rounded p-4 flex items-center gap-3">
-           <div class="text-sm flex-1">
+      + `<div class="bg-card border border-line rounded p-4 flex items-center gap-3 flex-wrap">
+           <div class="text-sm flex-1 min-w-[200px]">
              <div class="text-fg font-medium">Save this deal to your pipeline?</div>
              <div class="text-xs text-muted">Auto-titled <span class="text-fg">${escapeHtml(_defaultDealLabel(body))}</span> — you can rename, set status, and add notes from the Pipeline tab.</div>
            </div>
+           <button id="stressSharBtn" onclick="shareStressPermalink()" class="px-3 py-2 rounded border border-line hover:border-accent text-sm">🔗 Copy permalink</button>
            <button id="stressSaveBtn" class="px-4 py-2 rounded bg-accent text-bg font-medium hover:opacity-90">+ Save to pipeline</button>
          </div>`;
     document.getElementById('stressSaveBtn')?.addEventListener('click', saveStressToPipeline);
@@ -2133,6 +2276,7 @@ function renderStressResult(d) {
       </div>
       ${overlayLine}
       ${climateLine}
+      ${renderRateContext(d.assumptions?.mortgage_rate || 0.07)}
     </div>
     ${climateBlock}
     ${postTaxBlock}
@@ -2347,6 +2491,35 @@ function initPipelineHandlers() {
   document.getElementById('buyboxSaveWatchlist')?.addEventListener('click', watchlistFromBuyBox);
 }
 
+// ---- Macro rate context -------------------------------------------------
+//
+// One fetch on boot; cached for the session. Lets the Stress page label
+// "your rate vs today's market" without a per-render fetch.
+
+let MACRO_RATES = null;
+
+async function loadMacroRates() {
+  try {
+    const r = await fetch('/api/macro');
+    if (r.ok) MACRO_RATES = await r.json();
+  } catch (e) { /* silent */ }
+}
+
+function renderRateContext(assumedRate) {
+  if (!MACRO_RATES || !MACRO_RATES.mortgage_30y) return '';
+  const market = MACRO_RATES.mortgage_30y.value / 100;
+  const delta = (assumedRate - market) * 10000;    // basis points
+  const asOf  = (MACRO_RATES.mortgage_30y.as_of || '').slice(0, 10);
+  const sign = delta > 0 ? '+' : '';
+  const color = Math.abs(delta) <= 25 ? 'text-muted'
+              : delta > 0 ? 'text-yellow'      // assumed > market = conservative
+              : 'text-green';                    // assumed < market = optimistic
+  const note = Math.abs(delta) <= 25 ? 'aligned with market'
+             : delta > 0  ? `${Math.abs(Math.round(delta))}bps conservative (vs market)`
+             : `${Math.abs(Math.round(delta))}bps optimistic (vs market)`;
+  return `<div class="text-xs text-muted mt-1">Today's 30Y market rate: <span class="text-fg">${(market*100).toFixed(2)}%</span> as of ${asOf}. Your assumption: <span class="${color}">${(assumedRate*100).toFixed(2)}% — ${note}</span>.</div>`;
+}
+
 // ---- Data freshness badge -----------------------------------------------
 
 async function loadFreshnessBadge() {
@@ -2435,5 +2608,67 @@ document.addEventListener('DOMContentLoaded', () => {
   updatePipelineCount();
   initPipelineHandlers();
   loadFreshnessBadge();
+  loadMacroRates();
+  // Permalink: if URL has stress params, jump straight to Stress tab + prefill
+  applyStressPermalink();
   go('dashboard');
 });
+
+// ---- Permalink: ?stress=1&price=X&rent=Y&state=Z&zip=W&rate=R --------------
+//
+// Lets investors share a stress scenario via URL. e.g.
+//   /?stress=1&price=80000&rent=1700&state=MO&zip=64120
+// On load, fills the Stress form and auto-runs.
+
+function applyStressPermalink() {
+  const p = new URLSearchParams(location.search);
+  if (p.get('stress') !== '1') return;
+  // Wait one tick so DOM is ready; fill the form
+  setTimeout(() => {
+    const set = (id, v) => { if (v != null && $(id)) $(id).value = v; };
+    set('stPrice',  p.get('price'));
+    set('stRent',   p.get('rent'));
+    set('stRehab',  p.get('rehab') || 0);
+    set('stRate',   p.get('rate')  || 0.07);
+    set('stLtv',    p.get('ltv')   || 0.75);
+    set('stVac',    p.get('vac')   || 0.05);
+    set('stIns',    p.get('ins')   || '');
+    set('stTax',    p.get('tax')   || '');
+    set('stZip',    p.get('zip')   || '');
+    set('stARV',    p.get('arv')   || '');
+    if (p.get('state') && $('stState')) {
+      const sel = $('stState');
+      if ([...sel.options].some(o => o.value === p.get('state'))) sel.value = p.get('state');
+    }
+    go('stress');
+    if (p.get('autorun') !== '0') runStress();
+  }, 60);
+}
+
+function shareStressPermalink() {
+  // Build a permalink from the currently-loaded stress inputs
+  const fields = {
+    stress: '1',
+    price:  $('stPrice')?.value,
+    rent:   $('stRent')?.value,
+    rehab:  $('stRehab')?.value,
+    rate:   $('stRate')?.value,
+    ltv:    $('stLtv')?.value,
+    vac:    $('stVac')?.value,
+    ins:    $('stIns')?.value,
+    tax:    $('stTax')?.value,
+    state:  $('stState')?.value,
+    zip:    $('stZip')?.value,
+    arv:    $('stARV')?.value,
+  };
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(fields)) if (v) params.set(k, v);
+  const url = location.origin + location.pathname + '?' + params.toString();
+  navigator.clipboard.writeText(url).then(() => {
+    const btn = document.getElementById('stressSharBtn');
+    if (btn) { btn.textContent = '✓ Copied'; setTimeout(() => btn.textContent = '🔗 Copy permalink', 2000); }
+  }).catch(() => {
+    prompt('Permalink (copy):', url);
+  });
+}
+window.shareStressPermalink = shareStressPermalink;

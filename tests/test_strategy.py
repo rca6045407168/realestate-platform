@@ -265,6 +265,20 @@ def test_portfolio_aggregate_returns_resilience(con):
     assert out["resilience"]["deals_mapped"] >= 1
 
 
+def test_macro_endpoint_serves_30y_mortgage(con):
+    """/api/macro should return MORTGAGE30US since we just ingested it."""
+    from fastapi.testclient import TestClient
+    from reip.api import app
+    client = TestClient(app)
+    r = client.get("/api/macro")
+    assert r.status_code == 200
+    d = r.json()
+    # mortgage_30y should be populated post-ingest
+    if "mortgage_30y" in d:
+        assert 2 < d["mortgage_30y"]["value"] < 15   # reasonable rate range
+        assert d["mortgage_30y"]["as_of"]
+
+
 def test_chat_portfolio_resilience_tool(con):
     """The chat tool should read from the module-level pipeline and score it."""
     from reip import chat

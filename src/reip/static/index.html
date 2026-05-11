@@ -254,6 +254,11 @@
       </label>
       <button id="tzRefresh" class="ml-auto px-3 py-1.5 rounded bg-accent text-bg font-medium text-sm">Refresh</button>
     </div>
+    <div class="flex flex-wrap gap-2 items-center mb-3 text-xs">
+      <span class="text-muted uppercase tracking-wide">Saved views:</span>
+      <span id="tzViewsList"></span>
+      <button onclick="saveTzView()" class="px-2 py-1 rounded border border-line hover:border-accent">+ Save current as view</button>
+    </div>
     <div id="tzMeta" class="text-xs text-muted mb-3"></div>
     <div id="tzHost" class="bg-card rounded border border-line overflow-hidden"></div>
   </section>
