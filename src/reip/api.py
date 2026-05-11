@@ -35,6 +35,7 @@ from . import buybox as buybox_mod
 from . import climate as climate_mod
 from . import tax as tax_mod
 from . import portfolio as portfolio_mod
+from . import strategy as strategy_mod
 from . import property_ingest as ingest_mod
 from . import listings_search as listings_mod
 from . import projection as proj_mod
@@ -325,6 +326,30 @@ def portfolio_aggregate(req: PortfolioRequest):
         deduction_against_ordinary=req.deduction_against_ordinary,
     )
     return _sanitize(portfolio_mod.aggregate(req.deals, tax=t))
+
+
+@app.get("/api/strategy/backtest")
+def strategy_backtest_endpoint(section: Optional[str] = None):
+    """Run the 50-year empirical strategy analyses against live data.
+
+    Without `section`, returns the full report (regimes, drawdowns, momentum,
+    strategies, rent_yield). Pass `section=regimes|drawdowns|momentum|strategies|rent_yield`
+    to fetch just one.
+
+    See docs/STRATEGY.md for the synthesized strategy this analysis backs.
+    """
+    con = connect()
+    if section == "regimes":
+        return _sanitize({"regimes": strategy_mod.regime_decomposition(con)})
+    if section == "drawdowns":
+        return _sanitize({"drawdowns": strategy_mod.drawdown_panel(con)})
+    if section == "momentum":
+        return _sanitize({"momentum": strategy_mod.momentum_persistence(con)})
+    if section == "strategies":
+        return _sanitize({"strategies": strategy_mod.strategy_backtest(con)})
+    if section == "rent_yield":
+        return _sanitize({"rent_yield": strategy_mod.rent_yield_panel(con)})
+    return _sanitize(strategy_mod.full_report(con))
 
 
 @app.get("/api/freshness")

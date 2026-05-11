@@ -110,6 +110,9 @@
       <button onclick="go('portfolio')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">
         Portfolio
       </button>
+      <button onclick="go('strategy')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">
+        Strategy
+      </button>
       <button onclick="go('avm')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">AVM signal</button>
       <button onclick="go('remarks')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Remarks parser</button>
       <button onclick="go('ask')" class="navlink px-3 py-1.5 rounded bg-card border border-accent text-accent hover:bg-accent hover:text-bg">Ask reip</button>
@@ -261,6 +264,21 @@
         </button>
       </div>
       <div id="uwResultHost" class="space-y-4"></div>
+    </div>
+  </section>
+
+  <!-- ============== STRATEGY (50y empirical backtest) ============== -->
+  <section id="screen-strategy" class="screen hidden">
+    <div class="max-w-[1400px]">
+      <div class="mb-4">
+        <h2 class="text-lg font-semibold text-fg">50-year empirical strategy</h2>
+        <div class="text-xs text-muted mt-1">
+          Live backtests against FHFA HPI Metro (1975-2025, 410 metros) + Zillow ZORI/ZHVI (2015-2024, 264 metros).
+          Each table re-runs against current data.
+          Full synthesis: <a href="https://github.com/rca6045407168/realestate-platform/blob/master/docs/STRATEGY.md" target="_blank" class="text-accent hover:underline">docs/STRATEGY.md</a>.
+        </div>
+      </div>
+      <div id="strategyHost" class="space-y-4"></div>
     </div>
   </section>
 

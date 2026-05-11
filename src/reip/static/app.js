@@ -47,6 +47,7 @@ function go(name) {
   if (name === 'stress')    initStress();
   if (name === 'pipeline')  loadPipeline();
   if (name === 'portfolio') loadPortfolio();
+  if (name === 'strategy')  loadStrategy();
   if (name === 'ask')       focusAskInput();
 }
 window.go = go;
@@ -1188,6 +1189,222 @@ function renderPortfolio(p) {
     </div>`;
 
   return [hero, warnings, concentrationGrid, dealTable, caveat].filter(Boolean).join('\n');
+}
+
+// ---- Strategy backtest view --------------------------------------------
+
+async function loadStrategy() {
+  const host = $('strategyHost');
+  host.innerHTML = spinnerHTML('Running 50-year backtests against current FHFA HPI + ZORI data…');
+  try {
+    const r = await fetch('/api/strategy/backtest');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    host.innerHTML = renderStrategyReport(d);
+  } catch (e) {
+    host.innerHTML = `<div class="bg-card border border-red rounded p-4 text-red text-sm">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderStrategyReport(d) {
+  const fmtPctCell = (v, digits=1) => v == null ? '—' : (v*100).toFixed(digits) + '%';
+  const fmtMoney = (v) => v == null ? '—' : '$' + Math.round(v).toLocaleString();
+
+  // 1) Headline strategy comparison
+  const strats = d.strategies.map(s => `
+    <tr class="border-t border-line">
+      <td class="py-2 pr-3 font-medium">${escapeHtml(s.strategy)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums">${s.holding_multiple ? s.holding_multiple.toFixed(2)+'×' : '—'}</td>
+      <td class="py-2 pr-3 text-right tabular-nums ${irrColor(s.cagr)}">${fmtPctCell(s.cagr, 2)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums text-red">${s.max_dd_pct != null ? s.max_dd_pct.toFixed(1)+'%' : '—'}</td>
+      <td class="py-2 pr-3 text-right tabular-nums">${s.time_to_recover_months ? (s.time_to_recover_months/12).toFixed(1)+' yrs' : '—'}</td>
+    </tr>`).join('');
+
+  // 2) Regime decomposition
+  const regimes = d.regimes.map(r => `
+    <tr class="border-t border-line">
+      <td class="py-2 pr-3 font-medium">${escapeHtml(r.regime)}</td>
+      <td class="py-2 pr-3 text-xs text-muted">${escapeHtml(r.years)}</td>
+      <td class="py-2 pr-3 text-xs text-muted">${r.n}</td>
+      <td class="py-2 pr-3 text-right tabular-nums ${irrColor(r.median_cagr)}">${fmtPctCell(r.median_cagr)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums text-muted">${fmtPctCell(r.p10_cagr)} → ${fmtPctCell(r.p90_cagr)}</td>
+      <td class="py-2 pr-3 text-xs">${escapeHtml(r.best_metro)} <span class="text-green">${fmtPctCell(r.best_cagr)}</span></td>
+      <td class="py-2 pr-3 text-xs">${escapeHtml(r.worst_metro)} <span class="text-red">${fmtPctCell(r.worst_cagr)}</span></td>
+    </tr>`).join('');
+
+  // 3) Drawdowns (worst + best)
+  const dd = d.drawdowns;
+  const ddRows = (arr, color) => arr.map(r => `
+    <tr class="border-t border-line">
+      <td class="py-2 pr-3 text-xs">${escapeHtml(r.name)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums ${color}">${r.max_dd_pct.toFixed(1)}%</td>
+      <td class="py-2 pr-3 text-right tabular-nums text-xs text-muted">${r.ttr_months ? Math.round(r.ttr_months/12*10)/10+' yrs' : 'never'}</td>
+    </tr>`).join('');
+
+  // 4) Momentum
+  const mom = d.momentum;
+  const matrix = mom.transition_matrix_pct;
+  const momHeader = '<tr><th class="py-2 pr-3 text-left">Past 3y Q</th>' +
+    [1,2,3,4].map(q => `<th class="py-2 pr-3 text-right">→ Next Q${q}</th>`).join('') + '</tr>';
+  const momRows = [1,2,3,4].map(rowQ => {
+    const cells = [1,2,3,4].map(colQ => {
+      const v = matrix[rowQ]?.[colQ] || 0;
+      const isStrong = v >= 30;
+      const isDiag = rowQ === colQ;
+      const cls = isDiag ? 'text-accent font-semibold' : (isStrong ? 'text-fg' : 'text-muted');
+      return `<td class="py-2 pr-3 text-right tabular-nums ${cls}">${v.toFixed(1)}%</td>`;
+    }).join('');
+    return `<tr class="border-t border-line"><td class="py-2 pr-3 font-medium">Q${rowQ}</td>${cells}</tr>`;
+  }).join('');
+
+  const fwdByQ = mom.fwd_returns_by_quartile.map(r => `
+    <tr class="border-t border-line">
+      <td class="py-2 pr-3">Q${r.past_quartile} ${r.past_quartile === 1 ? '(top)' : r.past_quartile === 4 ? '(bottom)' : ''}</td>
+      <td class="py-2 pr-3 text-right tabular-nums ${irrColor(r.mean_fwd_return)}">${fmtPctCell(r.mean_fwd_return)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums">${fmtPctCell(r.median_fwd_return)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums text-muted">${r.n.toLocaleString()}</td>
+    </tr>`).join('');
+
+  // 5) Rent yield
+  const ry = d.rent_yield;
+  const rentTopTotal = ry.top_total_return.slice(0, 10).map(r => `
+    <tr class="border-t border-line">
+      <td class="py-2 pr-3 text-xs">${escapeHtml(r.cbsa_name)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums">${fmtPctCell(r.yield_now)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums">${fmtPctCell(r.price_appr_9y, 0)}</td>
+      <td class="py-2 pr-3 text-right tabular-nums ${irrColor(r.total_cagr_9y)}">${fmtPctCell(r.total_cagr_9y)}</td>
+    </tr>`).join('');
+
+  return `
+    <!-- Headlines -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted">Metros analyzed</div>
+        <div class="text-2xl font-bold text-fg mt-1">${dd.n_metros}</div>
+        <div class="text-xs text-muted mt-1">Continuous FHFA HPI data</div>
+      </div>
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted">Median worst drawdown</div>
+        <div class="text-2xl font-bold text-red mt-1">${dd.median_max_dd_pct.toFixed(1)}%</div>
+        <div class="text-xs text-muted mt-1">P10 (worst decile): <span class="text-red">${dd.p10_max_dd_pct.toFixed(1)}%</span></div>
+      </div>
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted">Median time-to-recover</div>
+        <div class="text-2xl font-bold text-yellow mt-1">${(dd.median_ttr_months/12).toFixed(1)} yrs</div>
+        <div class="text-xs text-muted mt-1">P90: <span class="text-red">${(dd.p90_ttr_months/12).toFixed(1)} yrs</span></div>
+      </div>
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted">Momentum edge</div>
+        <div class="text-2xl font-bold text-green mt-1">+${(mom.top_minus_bottom_fwd_return*100).toFixed(1)}pp</div>
+        <div class="text-xs text-muted mt-1">Top-Q vs Bottom-Q fwd-3y</div>
+      </div>
+    </div>
+
+    <!-- Strategy comparison -->
+    <div class="bg-card border border-line rounded p-4">
+      <div class="text-xs uppercase tracking-wide text-muted mb-3">Strategy archetypes — buy 1990, hold to 2024 (34 years)</div>
+      <table class="w-full text-sm">
+        <thead class="text-xs uppercase tracking-wide text-muted">
+          <tr>
+            <th class="text-left py-2 pr-3">Strategy</th>
+            <th class="text-right py-2 pr-3">Holding multiple</th>
+            <th class="text-right py-2 pr-3">CAGR</th>
+            <th class="text-right py-2 pr-3">Max drawdown</th>
+            <th class="text-right py-2 pr-3">Time to recover</th>
+          </tr>
+        </thead>
+        <tbody>${strats}</tbody>
+      </table>
+      <div class="text-xs text-muted mt-3">
+        Sun Belt Growth beat CA Coastal on both CAGR and drawdown over 34y.
+        All-Weather (lifestyle metros) is the lowest-drawdown growth option.
+        Heartland Yield trades CAGR for the shallowest drawdown.
+      </div>
+    </div>
+
+    <!-- Regime decomposition -->
+    <div class="bg-card border border-line rounded p-4 overflow-x-auto">
+      <div class="text-xs uppercase tracking-wide text-muted mb-3">8 regimes 1985-2024 — geography matters more than timing</div>
+      <table class="w-full text-sm">
+        <thead class="text-xs uppercase tracking-wide text-muted">
+          <tr>
+            <th class="text-left py-2 pr-3">Regime</th>
+            <th class="text-left py-2 pr-3">Years</th>
+            <th class="text-left py-2 pr-3">N</th>
+            <th class="text-right py-2 pr-3">Median CAGR</th>
+            <th class="text-right py-2 pr-3">P10 → P90</th>
+            <th class="text-left py-2 pr-3">Best metro</th>
+            <th class="text-left py-2 pr-3">Worst metro</th>
+          </tr>
+        </thead>
+        <tbody>${regimes}</tbody>
+      </table>
+    </div>
+
+    <!-- Drawdowns -->
+    <div class="grid lg:grid-cols-2 gap-3">
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted mb-3">Worst drawdowns (1985-2024)</div>
+        <table class="w-full text-sm">
+          <thead class="text-xs uppercase tracking-wide text-muted">
+            <tr><th class="text-left py-2 pr-3">Metro</th><th class="text-right py-2 pr-3">Max DD</th><th class="text-right py-2 pr-3">Recover</th></tr>
+          </thead>
+          <tbody>${ddRows(dd.worst, 'text-red')}</tbody>
+        </table>
+      </div>
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted mb-3">Shallowest drawdowns (boring tier)</div>
+        <table class="w-full text-sm">
+          <thead class="text-xs uppercase tracking-wide text-muted">
+            <tr><th class="text-left py-2 pr-3">Metro</th><th class="text-right py-2 pr-3">Max DD</th><th class="text-right py-2 pr-3">Recover</th></tr>
+          </thead>
+          <tbody>${ddRows(dd.best, 'text-green')}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Momentum -->
+    <div class="grid lg:grid-cols-2 gap-3">
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted mb-3">Momentum transition matrix (3y → 3y, ${mom.n_transitions.toLocaleString()} pairs)</div>
+        <table class="w-full text-sm">
+          <thead class="text-xs uppercase tracking-wide text-muted">${momHeader}</thead>
+          <tbody>${momRows}</tbody>
+        </table>
+        <div class="text-xs text-muted mt-3">
+          Diagonal in <span class="text-accent">accent</span>. Top-Q stays Top-Q 40% of the time (vs 25% random).
+          Mean-reversion to bottom is only 18.7%.
+        </div>
+      </div>
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted mb-3">Forward-3y return by past-3y quartile</div>
+        <table class="w-full text-sm">
+          <thead class="text-xs uppercase tracking-wide text-muted">
+            <tr><th class="text-left py-2 pr-3">Past Q</th><th class="text-right py-2 pr-3">Mean</th><th class="text-right py-2 pr-3">Median</th><th class="text-right py-2 pr-3">N</th></tr>
+          </thead>
+          <tbody>${fwdByQ}</tbody>
+        </table>
+        <div class="text-xs text-muted mt-3">
+          Buy what's working. Drop the top decile to avoid bubble territory.
+        </div>
+      </div>
+    </div>
+
+    <!-- Rent yield top 10 -->
+    <div class="bg-card border border-line rounded p-4">
+      <div class="text-xs uppercase tracking-wide text-muted mb-3">Top 10 by total return 2015-2024 (price + rent, ${ry.n_metros} metros)</div>
+      <table class="w-full text-sm">
+        <thead class="text-xs uppercase tracking-wide text-muted">
+          <tr><th class="text-left py-2 pr-3">Metro</th><th class="text-right py-2 pr-3">Gross yield</th><th class="text-right py-2 pr-3">9y price appreciation</th><th class="text-right py-2 pr-3">9y total CAGR</th></tr>
+        </thead>
+        <tbody>${rentTopTotal}</tbody>
+      </table>
+      <div class="text-xs text-muted mt-3">
+        Yield-vs-growth correlation: <span class="text-fg">${ry.corr_yield_vs_growth.toFixed(2)}</span> (negative but weak).
+        Rust-belt names delivered both high yield AND high appreciation 2015-2024.
+      </div>
+    </div>
+  `;
 }
 
 // ---- Buy box (per-zip target bands + one-click stress) ------------------

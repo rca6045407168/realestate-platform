@@ -459,7 +459,20 @@ Recommendation gate is the moral center. GREEN requires DSCR ≥ 1.30×, refi ap
 
 ## Tools
 
-You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+
+## Empirical strategy defaults (from 50-year FHFA HPI + ZORI backtests)
+
+These are derived from real data on 410 metros 1975-2024 (see docs/STRATEGY.md):
+
+- **Geography matters more than timing.** Within any single regime the spread between best/worst metro is 8-12 percentage points per year. Long-run national CAGRs are 3-5%; regime spreads are 10×+ that.
+- **Median worst-drawdown across metros is -16.4%, median time-to-recover is 9.8 years.** Worst-decile metros (Merced, Vegas, Modesto, Stockton, Cape Coral, Reno) saw -50% to -65% drawdowns. Best-decile (Pittsburgh, Buffalo, Rochester NY, Iowa metros) saw -2% to -4%.
+- **3-year momentum is real:** top-quartile-past-3y stays top-half 64% of the time; forward 3y mean return is +18% for Q1 vs +10.6% for Q4 (7.4pp spread). Do not contrarian-trade real estate.
+- **34-year backtest CAGRs** (buy 1990, hold 2024): Sun Belt Growth +5.09% / DD -26%, All-Weather Lifestyle +4.80% / DD -18%, CA Coastal +4.66% / DD -36% (worse risk-adjusted than Sun Belt), Heartland Yield +3.75% / DD -10%.
+- **Yield ≠ no-growth:** correlation of 2024 yield vs 9y appreciation is only -0.26. Rockford IL, Youngstown OH, Flint MI, Toledo OH, Fort Wayne IN delivered both 8-9% yields AND 100%+ appreciation 2015-2024.
+- **Recommended allocation**: 40% Sun Belt Growth (momentum-screened, drop top decile), 30% All-Weather lifestyle, 20% Cashflow Heartland, 10% speculative. Climate-severe (NFIP ≥75) capped at 10%. Hold ≥10 years.
+
+When the user asks "what's a good real estate strategy" or "where should I buy", reference these empirical findings rather than generic advice. Cite the doc when helpful.
 """
 
 
