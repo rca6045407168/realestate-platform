@@ -2044,25 +2044,35 @@ async function openFreshnessModal() {
                   : s.stale ? 'text-yellow'
                   : 'text-green';
       const status = s.error ? `❌ error: ${escapeHtml(s.error)}`
-                    : s.stale ? `⚠ stale (${s.days_since}d / max ${s.stale_after_days}d)`
-                    : `✓ fresh (${s.days_since}d ago)`;
+                    : s.stale ? `⚠ behind publisher (expected ${escapeHtml(s.expected_latest || '?')})`
+                    : `✓ current with publisher`;
+      const latestShort = s.latest ? s.latest.split(' ')[0] : '—';
       return `
         <tr class="border-t border-line">
           <td class="py-2 pr-3 font-medium">${escapeHtml(s.label)}</td>
           <td class="py-2 pr-3 text-xs text-muted">${escapeHtml(s.source)}</td>
-          <td class="py-2 pr-3 tabular-nums">${escapeHtml(s.latest || '—')}</td>
+          <td class="py-2 pr-3 tabular-nums">${escapeHtml(latestShort)}</td>
+          <td class="py-2 pr-3 text-xs text-muted">${escapeHtml(s.cadence || '')}, lags ~${s.publication_lag_days || '?'}d</td>
           <td class="py-2 pr-3 text-right tabular-nums text-muted">${(s.rows||0).toLocaleString()}</td>
           <td class="py-2 pr-3 ${color}">${status}</td>
         </tr>`;
     }).join('');
     body.innerHTML = `
       <div class="text-xs text-muted mb-3">
-        Each table is checked against a "stale after N days" threshold. Stale data warps rankings.
+        Each source has a natural cadence (monthly / annual) and a publication lag.
+        We're "stale" only when the publisher has released a newer file we haven't pulled.
         Rerun ingest jobs to refresh — see <code class="text-fg">reip ingest --help</code>.
       </div>
       <table class="w-full text-sm">
         <thead class="text-xs uppercase tracking-wide text-muted">
-          <tr><th class="text-left py-2 pr-3">Source</th><th class="text-left py-2 pr-3">Table</th><th class="text-left py-2 pr-3">Latest</th><th class="text-right py-2 pr-3">Rows</th><th class="text-left py-2 pr-3">Status</th></tr>
+          <tr>
+            <th class="text-left py-2 pr-3">Source</th>
+            <th class="text-left py-2 pr-3">Table</th>
+            <th class="text-left py-2 pr-3">Latest in DB</th>
+            <th class="text-left py-2 pr-3">Cadence</th>
+            <th class="text-right py-2 pr-3">Rows</th>
+            <th class="text-left py-2 pr-3">Status</th>
+          </tr>
         </thead>
         <tbody>${rows}</tbody>
       </table>`;

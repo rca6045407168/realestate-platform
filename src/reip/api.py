@@ -331,46 +331,117 @@ def portfolio_aggregate(req: PortfolioRequest):
 def data_freshness():
     """Surface what's most-recent in every key table the rankings depend on.
 
-    Inspects actual data rows (most recent period/year) rather than just the
-    `source_freshness` stamp table, since loaders don't always stamp.
-    Returns per-source: latest period, days since latest, rows, stale flag.
+    Each source has a NATURAL CADENCE (how often the publisher releases) and
+    a PUBLICATION LAG (how far behind the calendar that release sits). A
+    source is "stale" only when our data is BEHIND the publisher — not just
+    behind today. ACS 2023 isn't stale in May 2026 because ACS 2024 doesn't
+    come out until Dec 2026.
+
+    For each source we estimate `expected_latest` — the most recent period
+    the publisher *should have released* by `today`. If our `latest` >=
+    `expected_latest`, we're current. Otherwise we report the gap in
+    publisher periods missed.
     """
     con = connect()
     from datetime import datetime, date
+    import re
     now = datetime.now()
+    today = now.date()
+
     def days_since(d):
         if d is None: return None
         if isinstance(d, datetime): return (now - d).days
         if isinstance(d, date):     return (now.date() - d).days
-        # for numeric year, treat as Jan 1 of that year
         try:
-            return (now.date() - date(int(d), 1, 1)).days
+            return (today - date(int(d), 1, 1)).days
+        except (TypeError, ValueError):
+            pass
+        # Strings like "2024-Annual" or "2024-Q3" — extract the year
+        try:
+            m = re.search(r"(\d{4})", str(d))
+            if m:
+                return (today - date(int(m.group(1)), 1, 1)).days
         except Exception:
-            return None
+            pass
+        return None
+
+    def _expected_latest_monthly(lag_days: int):
+        """For a monthly series, last month-end the publisher should have shipped by today,
+        given a publication lag of `lag_days`."""
+        # e.g. lag_days=15: April data drops May 15. As of May 10, expected = March.
+        target = today.replace(day=1)
+        # Walk back months until target + lag_days < today
+        from datetime import timedelta
+        for _ in range(24):
+            month_end = (target.replace(day=28) + timedelta(days=4)).replace(day=1)\
+                          - timedelta(days=1)
+            # publisher ships data for `target` month around month_end + lag_days
+            if (month_end + timedelta(days=lag_days)) <= today:
+                return month_end
+            # back one month
+            if target.month == 1:
+                target = target.replace(year=target.year-1, month=12)
+            else:
+                target = target.replace(month=target.month-1)
+        return None
+
+    def _expected_latest_annual(lag_days: int):
+        """For an annual series, the most recent calendar year whose release has shipped."""
+        from datetime import timedelta
+        # Annual year Y typically releases around (Y+1) + lag_days
+        for y in range(today.year, today.year - 5, -1):
+            release_date = date(y + 1, 1, 1) + timedelta(days=lag_days)
+            if release_date <= today:
+                return y
+        return None
 
     checks = [
-        ("zillow_zhvi",   "period", "Zillow ZHVI",   60),
-        ("zillow_zori",   "period", "Zillow ZORI",   60),
-        ("redfin_market", "period", "Redfin sales",  45),
-        ("fema_nfip",     "year",   "FEMA NFIP",     365),
-        ("acs_county",    "year",   "ACS demographics", 730),
-        ("bls_qcew",      "period", "BLS QCEW",      180),
+        # source, col, label, cadence, lag_days
+        # cadence = 'monthly' | 'weekly' | 'quarterly' | 'annual'
+        ("zillow_zhvi",   "period", "Zillow ZHVI",   "monthly",   15),
+        ("zillow_zori",   "period", "Zillow ZORI",   "monthly",   15),
+        ("redfin_market", "period", "Redfin sales",  "monthly",   30),
+        # FEMA NFIP: data exists for current year because of ongoing claims;
+        # treat as annual with a small lag.
+        ("fema_nfip",     "year",   "FEMA NFIP",     "annual",    90),
+        # ACS 5-year estimates: 5-year ending in Y releases ~Dec of Y+1
+        ("acs_county",    "year",   "ACS demographics", "annual",  365),
+        # BLS QCEW: Q4 of year Y releases around Jun of Y+1; annual file later
+        ("bls_qcew",      "period", "BLS QCEW",      "annual",    180),
     ]
     out = []
-    for tbl, col, label, stale_days in checks:
+    for tbl, col, label, cadence, lag_days in checks:
         try:
-            latest = con.execute(f"SELECT MAX({col}) FROM {tbl}").fetchone()[0]
+            latest_raw = con.execute(f"SELECT MAX({col}) FROM {tbl}").fetchone()[0]
             rows = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-            d = days_since(latest)
-            stale = d is None or d > stale_days
+            d = days_since(latest_raw)
+            # Compute publisher-aware expectation
+            if cadence == "monthly":
+                expected = _expected_latest_monthly(lag_days)
+                expected_str = expected.strftime("%Y-%m") if expected else None
+                latest_norm = latest_raw.date() if isinstance(latest_raw, datetime) \
+                              else (latest_raw if isinstance(latest_raw, date) else None)
+                stale = expected is not None and (latest_norm is None or latest_norm < expected.replace(day=1))
+            elif cadence == "annual":
+                expected = _expected_latest_annual(lag_days)
+                expected_str = str(expected) if expected else None
+                # Parse year out of latest (may be string like "2024-Annual")
+                m = re.search(r"(\d{4})", str(latest_raw))
+                latest_year = int(m.group(1)) if m else None
+                stale = expected is not None and (latest_year is None or latest_year < expected)
+            else:
+                expected_str = None
+                stale = False
             out.append({
-                "source":      tbl,
-                "label":       label,
-                "latest":      str(latest) if latest is not None else None,
-                "days_since":  d,
-                "rows":        int(rows or 0),
-                "stale_after_days": stale_days,
-                "stale":       stale,
+                "source":          tbl,
+                "label":           label,
+                "latest":          str(latest_raw) if latest_raw is not None else None,
+                "expected_latest": expected_str,
+                "days_since":      d,
+                "rows":            int(rows or 0),
+                "cadence":         cadence,
+                "publication_lag_days": lag_days,
+                "stale":           stale,
             })
         except Exception as e:
             out.append({"source": tbl, "label": label, "error": str(e)})
