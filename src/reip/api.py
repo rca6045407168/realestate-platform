@@ -32,6 +32,8 @@ from . import underwriting as uw_mod
 from . import recommendation as rec_mod
 from . import stress as stress_mod
 from . import buybox as buybox_mod
+from . import tax as tax_mod
+from . import portfolio as portfolio_mod
 from . import property_ingest as ingest_mod
 from . import listings_search as listings_mod
 from . import projection as proj_mod
@@ -146,6 +148,15 @@ class ChatRequest(BaseModel):
     message: str
     history: list[dict] = Field(default_factory=list)
     pipeline_summary: list[dict] = Field(default_factory=list)
+
+
+class PortfolioRequest(BaseModel):
+    """Frontend posts the localStorage deal list + tax assumptions."""
+    deals: list[dict] = Field(default_factory=list)
+    tax_bracket: float = tax_mod.DEFAULT_TAX_BRACKET
+    land_allocation: float = tax_mod.DEFAULT_LAND_ALLOC
+    useful_life_years: float = tax_mod.DEFAULT_USEFUL_LIFE_Y
+    deduction_against_ordinary: bool = True
 
 
 class StressRequest(BaseModel):
@@ -295,6 +306,23 @@ def _underwrite_core(req: UnderwriteRequest) -> dict:
 @app.post("/api/underwritings")
 def underwrite(req: UnderwriteRequest) -> UnderwriteResponse:
     return UnderwriteResponse(**_underwrite_core(req))
+
+
+@app.post("/api/portfolio/aggregate")
+def portfolio_aggregate(req: PortfolioRequest):
+    """Roll up a user's deals into a portfolio view.
+
+    Pure aggregation — no DB. Frontend posts the deal list it has in
+    localStorage. Server computes totals, concentration buckets, post-tax
+    IRR, depreciation tax savings, and concentration warnings.
+    """
+    t = tax_mod.TaxAssumptions(
+        tax_bracket=req.tax_bracket,
+        land_allocation=req.land_allocation,
+        useful_life_years=req.useful_life_years,
+        deduction_against_ordinary=req.deduction_against_ordinary,
+    )
+    return _sanitize(portfolio_mod.aggregate(req.deals, tax=t))
 
 
 @app.get("/api/zips/{zip_code}/arv")

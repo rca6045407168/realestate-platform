@@ -102,6 +102,9 @@
       <button onclick="go('pipeline')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">
         Pipeline <span id="pipelineNavCount" class="text-muted"></span>
       </button>
+      <button onclick="go('portfolio')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">
+        Portfolio
+      </button>
       <button onclick="go('avm')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">AVM signal</button>
       <button onclick="go('remarks')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Remarks parser</button>
       <button onclick="go('ask')" class="navlink px-3 py-1.5 rounded bg-card border border-accent text-accent hover:bg-accent hover:text-bg">Ask reip</button>
@@ -249,6 +252,43 @@
         </button>
       </div>
       <div id="uwResultHost" class="space-y-4"></div>
+    </div>
+  </section>
+
+  <!-- ============== PORTFOLIO ============== -->
+  <section id="screen-portfolio" class="screen hidden">
+    <div class="max-w-[1400px]">
+      <div class="flex items-baseline justify-between mb-3">
+        <div>
+          <h2 class="text-lg font-semibold text-fg">Portfolio</h2>
+          <div class="text-xs text-muted mt-1">Roll-up of every saved deal: total equity, monthly cash flow, weighted IRR — pre- and post-tax. Tracks single-state and climate-correlated concentration risk.</div>
+        </div>
+        <div class="flex gap-3 items-center text-xs">
+          <label class="text-muted">Bracket</label>
+          <select id="pfBracket" class="bg-bg border border-line rounded px-2 py-1">
+            <option value="0.22">22% (mid earner)</option>
+            <option value="0.24">24% (~$200K AGI)</option>
+            <option value="0.32" selected>32% (high earner)</option>
+            <option value="0.35">35% ($250-600K)</option>
+            <option value="0.37">37% (top bracket)</option>
+          </select>
+          <label class="text-muted">Land alloc</label>
+          <select id="pfLandAlloc" class="bg-bg border border-line rounded px-2 py-1">
+            <option value="0.15">15%</option>
+            <option value="0.20" selected>20%</option>
+            <option value="0.25">25%</option>
+            <option value="0.30">30%</option>
+          </select>
+          <label class="text-muted">Active deduction</label>
+          <select id="pfActive" class="bg-bg border border-line rounded px-2 py-1" title="True = REP / STR / sub-$100K active. False = passive-loss limited.">
+            <option value="true" selected>Yes (REP/STR)</option>
+            <option value="false">No (passive-suspended)</option>
+          </select>
+          <button id="pfRefresh" class="px-3 py-1 rounded bg-accent text-bg font-medium">Refresh</button>
+        </div>
+      </div>
+
+      <div id="portfolioHost" class="space-y-4"></div>
     </div>
   </section>
 

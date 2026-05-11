@@ -42,6 +42,7 @@ function go(name) {
   if (name === 'topzips')   loadTopZips();
   if (name === 'stress')    initStress();
   if (name === 'pipeline')  loadPipeline();
+  if (name === 'portfolio') loadPortfolio();
   if (name === 'ask')       focusAskInput();
 }
 window.go = go;
@@ -981,6 +982,177 @@ async function ingestLink() {
     <div class="text-green mt-1">Prefilled ${prefilled.length} field(s): ${prefilled.join(', ') || '(none)'} — review and run.</div>
     ${warn}
   `;
+}
+
+// ---- Portfolio view ----------------------------------------------------
+
+let PORTFOLIO_BOUND = false;
+async function loadPortfolio() {
+  if (!PORTFOLIO_BOUND) {
+    PORTFOLIO_BOUND = true;
+    $('pfRefresh').addEventListener('click', loadPortfolio);
+    ['pfBracket', 'pfLandAlloc', 'pfActive'].forEach(id => {
+      $(id)?.addEventListener('change', loadPortfolio);
+    });
+  }
+  const host = $('portfolioHost');
+  if (!DEALS.length) {
+    host.innerHTML = `<div class="bg-card border border-line rounded p-8 text-center text-muted text-sm">
+      No saved deals yet. Run a stress test and save it — portfolio metrics aggregate across whatever's in your pipeline.
+    </div>`;
+    return;
+  }
+  host.innerHTML = spinnerHTML('Aggregating portfolio + tax math…');
+  const body = {
+    deals: DEALS,
+    tax_bracket:                +$('pfBracket').value,
+    land_allocation:            +$('pfLandAlloc').value,
+    useful_life_years:          27.5,
+    deduction_against_ordinary: $('pfActive').value === 'true',
+  };
+  try {
+    const r = await fetch('/api/portfolio/aggregate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    host.innerHTML = renderPortfolio(data);
+  } catch (e) {
+    host.innerHTML = `<div class="bg-card border border-red rounded p-4 text-red text-sm">Error: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function renderPortfolio(p) {
+  const t = p.totals;
+  const fmtMoney = (x) => '$' + Math.round(x || 0).toLocaleString();
+  const fmtMoneySigned = (x) => (x >= 0 ? '+' : '') + fmtMoney(x);
+  // Hero stats grid
+  const cf_pre = t.annual_cf_pretax, cf_post = t.annual_cf_posttax;
+  const cf_post_color = cf_post >= 0 ? 'text-green' : 'text-red';
+  const cf_pre_color  = cf_pre >= 0 ? 'text-green' : 'text-red';
+  const irr_pre  = t.weighted_irr_pretax;
+  const irr_post = t.weighted_irr_posttax;
+  const hero = `
+    <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted">Equity deployed</div>
+        <div class="text-2xl font-bold text-fg mt-1">${fmtMoney(t.equity_deployed)}</div>
+        <div class="text-xs text-muted mt-1">${p.count} deal${p.count===1?'':'s'}</div>
+      </div>
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted">Monthly CF (post-tax)</div>
+        <div class="text-2xl font-bold ${cf_post_color} mt-1">${fmtMoneySigned(t.monthly_cf_posttax)}</div>
+        <div class="text-xs text-muted mt-1">pre-tax: <span class="${cf_pre_color}">${fmtMoneySigned(t.monthly_cf_pretax)}</span></div>
+      </div>
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted">Weighted IRR</div>
+        <div class="text-2xl font-bold ${irrColor(irr_post)} mt-1">${fmtPct(irr_post)} <span class="text-xs text-muted font-normal">post-tax</span></div>
+        <div class="text-xs text-muted mt-1">pre-tax: <span class="${irrColor(irr_pre)}">${fmtPct(irr_pre)}</span></div>
+      </div>
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted">Annual tax savings</div>
+        <div class="text-2xl font-bold text-green mt-1">${fmtMoney(t.annual_tax_savings)}</div>
+        <div class="text-xs text-muted mt-1">depreciation: ${fmtMoney(t.annual_depreciation)}/yr</div>
+      </div>
+    </div>`;
+
+  // Concentration warnings
+  const warnings = p.concentration_warnings.length ? `
+    <div class="bg-card border border-yellow rounded p-4">
+      <div class="text-xs uppercase tracking-wide text-yellow mb-2">⚠ Concentration warnings</div>
+      <ul class="list-disc pl-5 space-y-1 text-sm">
+        ${p.concentration_warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}
+      </ul>
+    </div>` : '';
+
+  // Concentration bars (state / verdict / status)
+  const bars = (rows, title, colorOf) => {
+    if (!rows.length) return '';
+    return `
+      <div class="bg-card border border-line rounded p-4">
+        <div class="text-xs uppercase tracking-wide text-muted mb-3">${title}</div>
+        <div class="space-y-2">
+          ${rows.map(r => `
+            <div class="text-sm">
+              <div class="flex justify-between mb-1">
+                <span>${escapeHtml(r.label)} <span class="text-xs text-muted">(${r.deals} deal${r.deals===1?'':'s'})</span></span>
+                <span class="tabular-nums">${fmtMoney(r.equity)} · ${(r.pct*100).toFixed(0)}%</span>
+              </div>
+              <div class="h-2 bg-bg rounded overflow-hidden">
+                <div class="h-full ${colorOf(r)}" style="width: ${r.pct*100}%"></div>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  };
+  const stateColor = (r) => {
+    const climate = ['FL','TX','CA','AZ','NV','CO','LA','MS','AL'];
+    return climate.includes(r.key) ? 'bg-yellow' : 'bg-accent';
+  };
+  const verdictColor = (r) => ({GREEN:'bg-green',YELLOW:'bg-yellow',RED:'bg-red'})[r.key] || 'bg-fg';
+  const statusColor = (r) => 'bg-accent';
+
+  const concentrationGrid = `
+    <div class="grid md:grid-cols-3 gap-3">
+      ${bars(p.by_state,   'Equity by state',   stateColor)}
+      ${bars(p.by_verdict, 'Equity by verdict', verdictColor)}
+      ${bars(p.by_status,  'Equity by status',  statusColor)}
+    </div>`;
+
+  // Per-deal table
+  const rows = p.deals_with_tax.map(d => {
+    const v = d.verdict || '—';
+    const vCol = {GREEN:'text-green',YELLOW:'text-yellow',RED:'text-red'}[v] || '';
+    return `
+      <tr class="border-t border-line hover:bg-bg">
+        <td class="py-2 pr-3 font-medium">${escapeHtml(d.label || '—')}</td>
+        <td class="py-2 pr-3 ${vCol} font-semibold">${v}</td>
+        <td class="py-2 pr-3 text-xs text-muted">${d.state || '—'}</td>
+        <td class="py-2 pr-3 text-right tabular-nums">${fmtMoney(d.equity)}</td>
+        <td class="py-2 pr-3 text-right tabular-nums ${irrColor(d.irr_pretax)}">${fmtPct(d.irr_pretax)}</td>
+        <td class="py-2 pr-3 text-right tabular-nums ${irrColor(d.irr_posttax)}">${fmtPct(d.irr_posttax)}</td>
+        <td class="py-2 pr-3 text-right tabular-nums ${d.annual_cf_pretax >= 0 ? 'text-green' : 'text-red'}">${fmtMoneySigned(d.annual_cf_pretax)}</td>
+        <td class="py-2 pr-3 text-right tabular-nums ${d.annual_cf_posttax >= 0 ? 'text-green' : 'text-red'}">${fmtMoneySigned(d.annual_cf_posttax)}</td>
+        <td class="py-2 pr-3 text-right tabular-nums text-green">${fmtMoney(d.annual_tax_savings)}</td>
+      </tr>`;
+  }).join('');
+  const dealTable = `
+    <div class="bg-card border border-line rounded overflow-hidden">
+      <div class="px-4 py-3 text-xs uppercase tracking-wide text-muted border-b border-line">Per-deal breakdown</div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="text-xs uppercase tracking-wide text-muted bg-bg">
+            <tr>
+              <th class="text-left py-2 pl-4 pr-3">Deal</th>
+              <th class="text-left py-2 pr-3">Verdict</th>
+              <th class="text-left py-2 pr-3">State</th>
+              <th class="text-right py-2 pr-3">Equity</th>
+              <th class="text-right py-2 pr-3">IRR pre</th>
+              <th class="text-right py-2 pr-3">IRR post</th>
+              <th class="text-right py-2 pr-3">CF/yr pre</th>
+              <th class="text-right py-2 pr-3">CF/yr post</th>
+              <th class="text-right py-2 pr-3">Tax saved</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  // Tax assumptions caveat
+  const tA = p.tax_assumptions;
+  const caveat = `
+    <div class="text-xs text-muted bg-bg border border-line rounded p-3">
+      <span class="uppercase tracking-wide">Tax model:</span>
+      ${(tA.tax_bracket*100).toFixed(0)}% bracket · ${(tA.land_allocation*100).toFixed(0)}% land · ${tA.useful_life_years}yr useful life ·
+      ${tA.deduction_against_ordinary ? '<span class="text-green">active deduction</span> (REP/STR/sub-$100K)' : '<span class="text-yellow">passive — losses suspended</span>'}.
+      Model excludes: state tax, 1031 exchanges, opportunity zones, bonus depreciation, cost-seg, AMT, exit recapture drag.
+      Treat post-tax IRR as the optimistic ceiling.
+    </div>`;
+
+  return [hero, warnings, concentrationGrid, dealTable, caveat].filter(Boolean).join('\n');
 }
 
 // ---- Buy box (per-zip target bands + one-click stress) ------------------
