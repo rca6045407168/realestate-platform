@@ -11,7 +11,11 @@
 
 const API = '/api';
 const $ = (id) => document.getElementById(id);
-const fmtPct = (v, d=2) => v == null || isNaN(v) ? '—' : (v*100).toFixed(d) + '%';
+const fmtPct = (v, d=2) => {
+  if (v == null || isNaN(v)) return '—';
+  if (v <= -0.99) return '< -99%';            // IRR bisect floor — show as wipe-out, not -99.0%
+  return (v*100).toFixed(d) + '%';
+};
 const fmtNum = (v, d=0) => v == null || isNaN(v) ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: d });
 const fmtMoney = (v) => v == null || isNaN(v) ? '—' : '$' + fmtNum(v, 0);
 const archCls = (a) => 'arch-' + (a || '').replace(/[^A-Za-z0-9]+/g, '-');
@@ -1936,11 +1940,6 @@ function renderPostTaxIRR(d, taxBracket) {
     </div>`;
 }
 
-function fmtPct(x) {
-  if (x == null || Number.isNaN(x)) return '—';
-  if (x <= -0.99) return '< -99%';
-  return (x * 100).toFixed(1) + '%';
-}
 function irrColor(x) {
   if (x == null) return '';
   if (x >= 0.10) return 'text-green';
