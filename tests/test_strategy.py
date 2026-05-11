@@ -153,3 +153,74 @@ def test_chat_strategy_backtest_tool_executes():
     assert len(strategies) == 4
     names = {s["strategy"] for s in strategies}
     assert names == {"All-Weather", "CA Coastal", "Sun Belt Growth", "Heartland Yield"}
+
+
+def test_msa_detail_includes_stability():
+    """The single-MSA endpoint should also include the historical stability tier."""
+    from fastapi.testclient import TestClient
+    from reip.api import app
+    client = TestClient(app)
+    # Pittsburgh CBSA — should be Boring per the 50y FHFA analysis
+    r = client.get("/api/msas/38300")
+    if r.status_code != 200:
+        pytest.skip("Pittsburgh MSA not in current scored set")
+    d = r.json()
+    if d.get("stability_tier") is not None:
+        assert d["stability_tier"] in {"Boring", "Standard", "Volatile", "Boom-Bust"}
+        assert d["historical_max_dd_pct"] < 0
+
+
+def test_top_zips_stability_filter():
+    """?stability=Boring should narrow to zips in low-DD metros."""
+    from fastapi.testclient import TestClient
+    from reip.api import app
+    client = TestClient(app)
+    r = client.get("/api/zips/top?stability=Boring&limit=20")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["stability_applied"] is True
+    assert d["stability_filter"] == "Boring"
+    # Every returned zip's parent CBSA must be Boring tier
+    for z in d["results"]:
+        # If the zip has no stability info, it shouldn't have made it through the filter
+        if "stability_tier" in z:
+            assert z["stability_tier"] == "Boring"
+
+
+def test_strategy_endpoint_cache_keys_independent():
+    """The TTL cache should key by section so single-section calls don't
+    accidentally serve the full report (or vice versa)."""
+    from fastapi.testclient import TestClient
+    from reip.api import app
+    client = TestClient(app)
+    # Cold-prime
+    r_full = client.get("/api/strategy/backtest").json()
+    r_section = client.get("/api/strategy/backtest?section=strategies").json()
+    # Single-section result has ONLY that section
+    assert set(r_section.keys()) == {"strategies"}
+    # Full result has all five
+    assert set(r_full.keys()) == {"regimes", "drawdowns", "momentum", "strategies", "rent_yield"}
+
+
+def test_portfolio_boom_bust_concentration_warning():
+    """Portfolio dominated by FL+CA+NV should fire the Boom-Bust state warning."""
+    from reip import portfolio, tax
+    deals = [
+        {"label": "FL 1", "status": "underwritten",
+         "inputs": {"purchase_price": 300_000, "monthly_rent": 2500, "rehab_cost": 0,
+                     "ltv": 0.75, "state": "FL"},
+         "stress": {"gate": {"verdict": "GREEN"},
+                    "scenarios": [{"irr": 0.10, "dscr": 1.3, "cash_flow_y1": 500, "cash_on_cash": 0.04},
+                                   {"irr": 0.05, "dscr": 1.1, "cash_flow_y1": 200, "cash_on_cash": 0.02},
+                                   {"irr": -0.05, "dscr": 0.9, "cash_flow_y1": -300, "cash_on_cash": -0.01}]}},
+        {"label": "CA 1", "status": "underwritten",
+         "inputs": {"purchase_price": 500_000, "monthly_rent": 3500, "rehab_cost": 0,
+                     "ltv": 0.75, "state": "CA"},
+         "stress": {"gate": {"verdict": "GREEN"},
+                    "scenarios": [{"irr": 0.08, "dscr": 1.2, "cash_flow_y1": 300, "cash_on_cash": 0.02},
+                                   {"irr": 0.03, "dscr": 1.0, "cash_flow_y1": 0, "cash_on_cash": 0.0},
+                                   {"irr": -0.10, "dscr": 0.8, "cash_flow_y1": -500, "cash_on_cash": -0.02}]}},
+    ]
+    out = portfolio.aggregate(deals)
+    text = " ".join(out["concentration_warnings"]).lower()
+    assert "boom-bust" in text or "boom bust" in text

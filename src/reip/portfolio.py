@@ -79,6 +79,14 @@ def _bucket(deals: list[dict], key_fn, label_fn=None):
     return out
 
 
+# State-level historical-volatility classification derived from the 50-year
+# FHFA HPI analysis (see docs/STRATEGY.md). These are states whose MAJOR
+# metros are Boom-Bust tier (worst-decile drawdowns, multi-decade recovery
+# from peaks). A portfolio heavily concentrated here ran -50% drawdowns
+# during the GFC and took 12-16 years to recover.
+BOOM_BUST_STATES = {"CA", "NV", "FL", "AZ"}
+
+
 def _concentration_warnings(by_state, by_verdict, deals_with_tax,
                              climate_states={"FL", "TX", "CA", "AZ", "NV", "CO", "LA", "MS", "AL"}) -> list[str]:
     warnings = []
@@ -92,6 +100,14 @@ def _concentration_warnings(by_state, by_verdict, deals_with_tax,
     if climate_pct >= 0.50:
         warnings.append(f"{climate_pct*100:.0f}% of equity is in climate-stressed states "
                         f"({', '.join(s['key'] for s in by_state if s['key'] in climate_states and s['pct'] > 0)}).")
+    # Historical Boom-Bust state concentration
+    bb_pct = sum(s["pct"] for s in by_state if s["key"] in BOOM_BUST_STATES)
+    if bb_pct >= 0.40:
+        bb_states_present = [s["key"] for s in by_state if s["key"] in BOOM_BUST_STATES and s["pct"] > 0]
+        warnings.append(f"{bb_pct*100:.0f}% of equity is in historically Boom-Bust states "
+                        f"({', '.join(bb_states_present)}) — these saw -50% drawdowns and "
+                        f"12-16 year recoveries in 2007-2022. Confirm you can hold ≥10y through "
+                        f"that scenario.")
     # RED-verdict deals carrying real equity
     red_eq = sum(d["equity"] for v in by_verdict if v["key"] == "RED" for d in [v])
     if red_eq > 0:

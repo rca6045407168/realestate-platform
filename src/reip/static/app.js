@@ -905,8 +905,10 @@ async function loadTopZips() {
   });
   const st = $('tzState').value.trim().toUpperCase();
   const cb = $('tzCbsa').value.trim();
+  const stab = $('tzStability')?.value || '';
   if (st) params.set('state', st);
   if (cb) params.set('cbsa', cb);
+  if (stab) params.set('stability', stab);
   // Diversify-from-pipeline: compute concentrated states client-side from
   // localStorage and pass them to the API.
   let concentrated = [];
@@ -978,7 +980,7 @@ async function loadTopZips() {
   $('tzHost').innerHTML = html;
 }
 
-['tzState','tzCbsa','tzSort','tzMin','tzMax','tzRate','tzLimit','tzDiversify'].forEach(id =>
+['tzState','tzCbsa','tzSort','tzMin','tzMax','tzRate','tzLimit','tzDiversify','tzStability'].forEach(id =>
   document.addEventListener('DOMContentLoaded', () => {
     const el = $(id); if (el) el.addEventListener('change', loadTopZips);
   })

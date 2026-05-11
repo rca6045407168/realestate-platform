@@ -48,6 +48,47 @@ app = FastAPI(title="reip", version="0.4.0",
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+@app.on_event("startup")
+def _warm_caches():
+    """Pre-compute slow analytics once at boot so first-user requests are
+    instant. Without this:
+      - /api/msas cold-start is ~3-5s (stability panel build)
+      - /api/strategy/backtest cold-start is ~5-8s (5 SQL aggregates)
+    Warming is best-effort — log on failure but don't block startup."""
+    import threading
+    def _warm():
+        try:
+            con = connect()
+            strategy_mod.compute_stability_panel(con)
+        except Exception as e:
+            print(f"[startup] stability cache warm failed: {e}")
+    # Background thread so uvicorn's startup isn't blocked
+    threading.Thread(target=_warm, daemon=True).start()
+
+
+# ----------- 5-minute TTL cache on the strategy backtest endpoint -----------
+# Strategy analyses are deterministic given the DB state, and full_report()
+# takes 5-8s on this hardware. Cache by section name so single-section
+# calls stay independent of the full-report call.
+
+_STRATEGY_CACHE: dict[str, tuple[float, dict]] = {}
+_STRATEGY_TTL = 300  # 5 minutes
+
+
+def _strategy_cache_get(key: str):
+    import time
+    entry = _STRATEGY_CACHE.get(key)
+    if entry is None: return None
+    ts, value = entry
+    if time.time() - ts > _STRATEGY_TTL: return None
+    return value
+
+
+def _strategy_cache_put(key: str, value: dict):
+    import time
+    _STRATEGY_CACHE[key] = (time.time(), value)
+
+
 def _clean(d: dict) -> dict:
     """Replace NaN/Inf with None for JSON (shallow)."""
     out = {}
@@ -241,6 +282,13 @@ def get_msa(cbsa_code: str):
                        ("cashflow_score",     "cashflow_pct"),
                        ("total_return_score", "total_return_pct")):
         row[label] = float(df[col].rank(pct=True).loc[m.index[0]]) if col in df.columns else None
+    # Attach historical stability (FHFA HPI-derived). The cache is warmed
+    # at startup, so this is O(1) lookup after the first request.
+    stab = strategy_mod.stability_for(connect(), cbsa_code)
+    if stab:
+        row["stability_tier"]        = stab["tier"]
+        row["historical_max_dd_pct"] = stab["max_dd_pct"]
+        row["historical_ttr_months"] = stab["ttr_months"]
     return _clean(row)
 
 
@@ -350,20 +398,28 @@ def strategy_backtest_endpoint(section: Optional[str] = None):
     strategies, rent_yield). Pass `section=regimes|drawdowns|momentum|strategies|rent_yield`
     to fetch just one.
 
-    See docs/STRATEGY.md for the synthesized strategy this analysis backs.
+    Cached 5 minutes per (section). See docs/STRATEGY.md for the synthesized
+    strategy this analysis backs.
     """
+    key = section or "_full"
+    cached = _strategy_cache_get(key)
+    if cached is not None:
+        return cached
     con = connect()
     if section == "regimes":
-        return _sanitize({"regimes": strategy_mod.regime_decomposition(con)})
-    if section == "drawdowns":
-        return _sanitize({"drawdowns": strategy_mod.drawdown_panel(con)})
-    if section == "momentum":
-        return _sanitize({"momentum": strategy_mod.momentum_persistence(con)})
-    if section == "strategies":
-        return _sanitize({"strategies": strategy_mod.strategy_backtest(con)})
-    if section == "rent_yield":
-        return _sanitize({"rent_yield": strategy_mod.rent_yield_panel(con)})
-    return _sanitize(strategy_mod.full_report(con))
+        out = _sanitize({"regimes": strategy_mod.regime_decomposition(con)})
+    elif section == "drawdowns":
+        out = _sanitize({"drawdowns": strategy_mod.drawdown_panel(con)})
+    elif section == "momentum":
+        out = _sanitize({"momentum": strategy_mod.momentum_persistence(con)})
+    elif section == "strategies":
+        out = _sanitize({"strategies": strategy_mod.strategy_backtest(con)})
+    elif section == "rent_yield":
+        out = _sanitize({"rent_yield": strategy_mod.rent_yield_panel(con)})
+    else:
+        out = _sanitize(strategy_mod.full_report(con))
+    _strategy_cache_put(key, out)
+    return out
 
 
 @app.get("/api/freshness")
@@ -606,6 +662,7 @@ def zips_top(
     ltv: float = 0.75,
     concentrated_states: Optional[str] = None,
     diversify_penalty: float = 0.30,
+    stability: Optional[str] = None,
 ):
     """Rank every US zip by 5y expected investment return.
 
@@ -621,6 +678,11 @@ def zips_top(
     these states get their sort score multiplied by (1 - diversify_penalty),
     de-prioritizing further concentration. Default penalty 30%. Pass empty
     or omit to disable.
+
+    `stability` filters zips to those whose parent MSA matches the historical
+    drawdown tier — "Boring" / "Standard" / "Volatile" / "Boom-Bust"
+    (FHFA HPI 1985-now). Useful for "show me only zips in metros that
+    survived the GFC with <30% drawdown."
     """
     con = connect()
     # Pull MSA archetype dict so the projection's archetype overlay applies
@@ -639,13 +701,25 @@ def zips_top(
     concentrated = set()
     if concentrated_states:
         concentrated = {s.strip().upper() for s in concentrated_states.split(",") if s.strip()}
-    fetch_limit = max(limit * 4, 200) if concentrated else limit
+    # If we'll filter or re-rank, pull a much larger candidate pool from SQL
+    # so the filter has real headroom. ~20k zips is fine to scan client-side.
+    need_pool = bool(concentrated) or bool(stability)
+    fetch_limit = max(limit * 20, 1000) if need_pool else limit
     rows = zip_returns_mod.rank_us(
         con, min_price=min_price, max_price=max_price,
         mortgage_rate=mortgage_rate, ltv=ltv,
         state=state, cbsa_code=cbsa, sort=sort, limit=fetch_limit,
         archetypes_by_cbsa=archetypes,
     )
+    # Stability filter: drop zips whose parent CBSA isn't in the requested tier.
+    stability_applied = False
+    if stability:
+        stability_panel = strategy_mod.compute_stability_panel(con)
+        rows = [
+            r for r in rows
+            if (stability_panel.get(str(getattr(r, "cbsa_code", "") or "")) or {}).get("tier") == stability
+        ]
+        stability_applied = True
     diversify_applied = False
     if concentrated:
         # Apply the concentration penalty to the active sort field. We re-rank
@@ -673,12 +747,24 @@ def zips_top(
         diversify_applied = True
     else:
         rows = rows[:limit]
+    # Attach stability tier to each returned zip (via parent CBSA)
+    stability_panel = strategy_mod.compute_stability_panel(con)
+    results = []
+    for z in rows:
+        d = zip_returns_mod.to_dict(z)
+        stab = stability_panel.get(str(d.get("cbsa_code") or ""))
+        if stab:
+            d["stability_tier"]        = stab["tier"]
+            d["historical_max_dd_pct"] = stab["max_dd_pct"]
+        results.append(d)
     return _sanitize({
-        "results": [zip_returns_mod.to_dict(z) for z in rows],
-        "count": len(rows),
+        "results": results,
+        "count": len(results),
         "diversify_applied": diversify_applied,
         "concentrated_states": sorted(concentrated) if concentrated else [],
         "diversify_penalty":   diversify_penalty if diversify_applied else None,
+        "stability_applied":   stability_applied,
+        "stability_filter":    stability,
     })
 
 
