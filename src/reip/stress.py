@@ -329,12 +329,17 @@ def _run_all(a: uw.Assumptions, state: Optional[str],
 
 def stress_test(a: uw.Assumptions, state: Optional[str] = None,
                 include_price_to_green: bool = True,
-                climate_score: Optional[dict] = None) -> dict:
+                climate_score: Optional[dict] = None,
+                include_rate_curve: bool = True) -> dict:
     """Top-level: run all 3 scenarios + gate + price-to-green search.
 
     If `climate_score` is provided (a dict from climate.ClimateScore.to_dict()),
     the stress + worst scenarios get climate-amplified — severe-climate zips
     see additional insurance and rehab stress on top of the state overlay.
+
+    `include_rate_curve` adds a rate-sensitivity series — IRR / CoC / DSCR /
+    verdict at rates from 5.5% to 9.0%, holding everything else constant.
+    Lets investors see exactly where the deal flips GREEN→YELLOW→RED.
     """
     extra = _climate_stress_bumps(climate_score)
     scenarios = _run_all(a, state, extra_stress=extra)
@@ -352,6 +357,39 @@ def stress_test(a: uw.Assumptions, state: Optional[str] = None,
     }
     if include_price_to_green and gate.verdict != "GREEN":
         out["price_to_green"] = _price_to_green(a, state, extra_stress=extra)
+    if include_rate_curve:
+        out["rate_curve"] = rate_sensitivity(a, state, extra_stress=extra)
+    return out
+
+
+def rate_sensitivity(a: uw.Assumptions, state: Optional[str],
+                     extra_stress: Optional[dict] = None,
+                     rates: tuple[float, ...] = (0.055, 0.060, 0.065, 0.070,
+                                                   0.075, 0.080, 0.085, 0.090)) -> list[dict]:
+    """For each rate, run the base scenario only and report the key metrics
+    plus the gate verdict. Tells the investor at what rate the deal flips.
+
+    Holds everything else (state overlay, climate amplification) constant —
+    so the curve shows how rate ALONE moves the verdict, not co-movement
+    with insurance/vacancy/etc.
+    """
+    state_overlay = _STATE_OVERLAYS.get((state or "").upper(), {})
+    out = []
+    for rate in rates:
+        trial = uw.Assumptions(**{**a.__dict__, "mortgage_rate": rate})
+        # Run all 3 scenarios so we get a verdict (gate needs base+stress+worst)
+        scenarios = _run_all(trial, state, extra_stress=extra_stress)
+        gate = _evaluate_gate(scenarios)
+        base = scenarios[0]
+        out.append({
+            "rate":         round(rate, 4),
+            "rate_bps":     int(rate * 10000),
+            "verdict":      gate.verdict,
+            "base_irr":     base["irr"],
+            "base_coc":     base["cash_on_cash"],
+            "base_dscr":    base["dscr"],
+            "base_cash_flow_y1": base["cash_flow_y1"],
+        })
     return out
 
 

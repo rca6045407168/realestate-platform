@@ -327,6 +327,63 @@ def portfolio_aggregate(req: PortfolioRequest):
     return _sanitize(portfolio_mod.aggregate(req.deals, tax=t))
 
 
+@app.get("/api/freshness")
+def data_freshness():
+    """Surface what's most-recent in every key table the rankings depend on.
+
+    Inspects actual data rows (most recent period/year) rather than just the
+    `source_freshness` stamp table, since loaders don't always stamp.
+    Returns per-source: latest period, days since latest, rows, stale flag.
+    """
+    con = connect()
+    from datetime import datetime, date
+    now = datetime.now()
+    def days_since(d):
+        if d is None: return None
+        if isinstance(d, datetime): return (now - d).days
+        if isinstance(d, date):     return (now.date() - d).days
+        # for numeric year, treat as Jan 1 of that year
+        try:
+            return (now.date() - date(int(d), 1, 1)).days
+        except Exception:
+            return None
+
+    checks = [
+        ("zillow_zhvi",   "period", "Zillow ZHVI",   60),
+        ("zillow_zori",   "period", "Zillow ZORI",   60),
+        ("redfin_market", "period", "Redfin sales",  45),
+        ("fema_nfip",     "year",   "FEMA NFIP",     365),
+        ("acs_county",    "year",   "ACS demographics", 730),
+        ("bls_qcew",      "period", "BLS QCEW",      180),
+    ]
+    out = []
+    for tbl, col, label, stale_days in checks:
+        try:
+            latest = con.execute(f"SELECT MAX({col}) FROM {tbl}").fetchone()[0]
+            rows = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            d = days_since(latest)
+            stale = d is None or d > stale_days
+            out.append({
+                "source":      tbl,
+                "label":       label,
+                "latest":      str(latest) if latest is not None else None,
+                "days_since":  d,
+                "rows":        int(rows or 0),
+                "stale_after_days": stale_days,
+                "stale":       stale,
+            })
+        except Exception as e:
+            out.append({"source": tbl, "label": label, "error": str(e)})
+
+    stale_count = sum(1 for r in out if r.get("stale"))
+    return {
+        "sources": out,
+        "stale_count": stale_count,
+        "any_stale": stale_count > 0,
+        "checked_at": now.isoformat(),
+    }
+
+
 @app.get("/api/zips/{zip_code}/climate")
 def zip_climate(zip_code: str, state: Optional[str] = None):
     """Per-zip climate risk: 0-100 score, category, primary risk type,
@@ -437,6 +494,8 @@ def zips_top(
     max_price: int = 800_000,
     mortgage_rate: float = 0.07,
     ltv: float = 0.75,
+    concentrated_states: Optional[str] = None,
+    diversify_penalty: float = 0.30,
 ):
     """Rank every US zip by 5y expected investment return.
 
@@ -446,6 +505,12 @@ def zips_top(
 
     Returns deep links to Redfin and Zillow zip-search pages so the user
     can browse actual properties from the most-promising zips.
+
+    `concentrated_states` is a comma-separated list of 2-letter state codes
+    (e.g. "FL,MO") where the user already has significant equity. Zips in
+    these states get their sort score multiplied by (1 - diversify_penalty),
+    de-prioritizing further concentration. Default penalty 30%. Pass empty
+    or omit to disable.
     """
     con = connect()
     # Pull MSA archetype dict so the projection's archetype overlay applies
@@ -458,13 +523,59 @@ def zips_top(
             archetypes = dict(zip(scored["cbsa_code"].astype(str), scored["archetype"]))
     except Exception:
         pass
+    # Pull more rows than `limit` if we're going to re-rank for diversification,
+    # so the penalty has a real candidate pool to lift other zips above
+    # concentrated ones.
+    concentrated = set()
+    if concentrated_states:
+        concentrated = {s.strip().upper() for s in concentrated_states.split(",") if s.strip()}
+    fetch_limit = max(limit * 4, 200) if concentrated else limit
     rows = zip_returns_mod.rank_us(
         con, min_price=min_price, max_price=max_price,
         mortgage_rate=mortgage_rate, ltv=ltv,
-        state=state, cbsa_code=cbsa, sort=sort, limit=limit,
+        state=state, cbsa_code=cbsa, sort=sort, limit=fetch_limit,
         archetypes_by_cbsa=archetypes,
     )
-    return _sanitize({"results": [zip_returns_mod.to_dict(z) for z in rows], "count": len(rows)})
+    diversify_applied = False
+    if concentrated:
+        # Apply the concentration penalty to the active sort field. We re-rank
+        # in Python because the SQL sort already produced a candidate pool.
+        sort_field = {
+            "regime": "regime_adjusted_irr",
+            "irr": "irr_5y",
+            "total_return": "total_return_5y_dollars",
+            "cashflow": "rental_profit_5y",
+            "appreciation": "appreciation_5y_dollars",
+            "yield": "cap_rate_y1",
+        }[sort]
+        for r in rows:
+            full_state = getattr(r, "state", None) or ""
+            two_letter = _state_full_to_code(full_state)
+            r._is_concentrated = two_letter in concentrated
+        # Compute a penalty-adjusted score for re-ranking
+        scored = []
+        for r in rows:
+            v = getattr(r, sort_field, 0) or 0
+            score = v * (1 - diversify_penalty) if r._is_concentrated else v
+            scored.append((score, r))
+        scored.sort(key=lambda kv: -kv[0])
+        rows = [r for _, r in scored[:limit]]
+        diversify_applied = True
+    else:
+        rows = rows[:limit]
+    return _sanitize({
+        "results": [zip_returns_mod.to_dict(z) for z in rows],
+        "count": len(rows),
+        "diversify_applied": diversify_applied,
+        "concentrated_states": sorted(concentrated) if concentrated else [],
+        "diversify_penalty":   diversify_penalty if diversify_applied else None,
+    })
+
+
+def _state_full_to_code(name: str) -> str:
+    """Bridge from zip_returns' state strings to 2-letter codes."""
+    from . import buybox as _bb
+    return _bb._to_state_code(name) or ""
 
 
 @app.get("/api/listings/markets")

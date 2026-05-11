@@ -857,6 +857,24 @@ document.addEventListener('DOMContentLoaded', () => $('buyRefresh').addEventList
 
 // ---- Top Zips (nationwide) ---------------------------------------------
 
+function _concentratedStatesFromPipeline(thresholdPct = 0.30) {
+  // Compute states where the user has ≥thresholdPct of total equity.
+  if (!DEALS.length) return [];
+  const byState = {};
+  let total = 0;
+  for (const d of DEALS) {
+    const i = d.inputs || {};
+    const eq = (i.purchase_price || 0) * (1 - (i.ltv || 0.75)) + (i.purchase_price || 0) * 0.03 + (i.rehab_cost || 0);
+    if (!i.state || eq <= 0) continue;
+    byState[i.state] = (byState[i.state] || 0) + eq;
+    total += eq;
+  }
+  if (total <= 0) return [];
+  return Object.entries(byState)
+    .filter(([_, eq]) => eq / total >= thresholdPct)
+    .map(([s]) => s);
+}
+
 async function loadTopZips() {
   const params = new URLSearchParams({
     sort: $('tzSort').value,
@@ -869,6 +887,15 @@ async function loadTopZips() {
   const cb = $('tzCbsa').value.trim();
   if (st) params.set('state', st);
   if (cb) params.set('cbsa', cb);
+  // Diversify-from-pipeline: compute concentrated states client-side from
+  // localStorage and pass them to the API.
+  let concentrated = [];
+  if ($('tzDiversify')?.checked) {
+    concentrated = _concentratedStatesFromPipeline(0.30);
+    if (concentrated.length) {
+      params.set('concentrated_states', concentrated.join(','));
+    }
+  }
   $('tzHost').innerHTML = spinnerHTML('Scoring every US zip with ZHVI+ZORI coverage…');
   $('tzMeta').textContent = '';
   let r;
@@ -878,7 +905,11 @@ async function loadTopZips() {
     $('tzHost').innerHTML = `<div class="p-6 text-red">${e.message}</div>`;
     return;
   }
-  $('tzMeta').textContent = `${r.count} zips ranked`;
+  const diversifyMsg = r.diversify_applied
+    ? ` · Diversify mode ON: ${(r.diversify_penalty*100).toFixed(0)}% penalty applied to ${r.concentrated_states.join(', ')} (your saved equity is concentrated there)`
+    : ($('tzDiversify')?.checked && !concentrated.length
+       ? ' · (Diversify ON but no state has ≥30% of your equity — no penalty applied)' : '');
+  $('tzMeta').textContent = `${r.count} zips ranked${diversifyMsg}`;
   if (!r.results.length) {
     $('tzHost').innerHTML = '<div class="p-6 text-muted">No zips matched.</div>';
     return;
@@ -927,7 +958,7 @@ async function loadTopZips() {
   $('tzHost').innerHTML = html;
 }
 
-['tzState','tzCbsa','tzSort','tzMin','tzMax','tzRate','tzLimit'].forEach(id =>
+['tzState','tzCbsa','tzSort','tzMin','tzMax','tzRate','tzLimit','tzDiversify'].forEach(id =>
   document.addEventListener('DOMContentLoaded', () => {
     const el = $(id); if (el) el.addEventListener('change', loadTopZips);
   })
@@ -1207,9 +1238,9 @@ function renderBuyBox(b) {
         <div class="text-xs text-muted mt-1">cosmetic → value-add BRRRR</div>
       </div>
       <div class="bg-bg rounded border border-line p-3">
-        <div class="text-xs uppercase tracking-wide text-muted">ARV (12mo)</div>
+        <div class="text-xs uppercase tracking-wide text-muted">ARV (12mo, trend)</div>
         <div class="text-fg font-medium text-base mt-1">${fmtMoney(b.arv_trend_12mo)}</div>
-        <div class="text-xs text-muted mt-1">today: ${fmtMoney(b.arv_now)}</div>
+        <div class="text-xs text-muted mt-1">today (ZHVI): ${fmtMoney(b.arv_now)}</div>
       </div>
       <div class="bg-bg rounded border border-line p-3">
         <div class="text-xs uppercase tracking-wide text-muted">Target cap rate</div>
@@ -1222,6 +1253,19 @@ function renderBuyBox(b) {
         <div class="text-xs text-muted mt-1">stress goes higher</div>
       </div>
     </div>
+    ${b.arv_sales_based ? `
+    <div class="bg-bg rounded border border-line p-3">
+      <div class="flex items-baseline justify-between mb-1">
+        <span class="text-xs uppercase tracking-wide text-muted">Sales-based ARV (Redfin)</span>
+        <span class="text-xs text-muted">as of ${(b.arv_sales_based.as_of||'').slice(0,10)} · n=${b.arv_sales_based.homes_sold_trailing}</span>
+      </div>
+      <div class="flex items-baseline gap-4">
+        <div class="text-fg font-medium text-lg">${fmtMoney(b.arv_sales_based.arv)}</div>
+        ${b.arv_sales_based.chg_12mo != null ? `<div class="text-xs ${b.arv_sales_based.chg_12mo >= 0 ? 'text-green' : 'text-red'}">12mo: ${(b.arv_sales_based.chg_12mo*100).toFixed(1)}%</div>` : ''}
+        ${b.arv_sales_based.median_days_on_market != null ? `<div class="text-xs text-muted">DOM: ${b.arv_sales_based.median_days_on_market}d</div>` : ''}
+      </div>
+      <div class="text-xs text-muted mt-1">vs. trend-based ${fmtMoney(b.arv_trend_12mo)} (12mo). Sales-based reflects actual transactions; weight it more for refi decisions.</div>
+    </div>` : ''}
     <div class="bg-bg rounded border border-line p-3 text-xs text-muted">
       <span class="uppercase tracking-wide">ARV method:</span> ${escapeHtml(b.arv_method)}
     </div>
@@ -1679,6 +1723,7 @@ function renderStressResult(d) {
   // Post-tax IRR per scenario, when a tax bracket is selected
   const taxBracket = $('stTaxBracket') ? +$('stTaxBracket').value : 0;
   const postTaxBlock = taxBracket > 0 ? renderPostTaxIRR(d, taxBracket) : '';
+  const rateCurveBlock = d.rate_curve ? renderRateCurve(d.rate_curve, d.assumptions?.mortgage_rate) : '';
 
   const scenRows = d.scenarios.map(s => {
     const deltaChips = Object.entries(s.deltas || {}).map(([k, v]) => {
@@ -1776,7 +1821,71 @@ function renderStressResult(d) {
     </div>` : ''}
 
     ${priceLine}
+    ${rateCurveBlock}
   `;
+}
+
+function renderRateCurve(curve, currentRate) {
+  if (!curve || !curve.length) return '';
+  const W = 600, H = 140, padL = 60, padR = 20, padT = 16, padB = 32;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const xs = curve.map(p => p.rate);
+  const ys = curve.map(p => (p.base_irr || 0));
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const yMin = Math.min(0, ...ys);
+  const yMax = Math.max(...ys, 0.01);
+  const sx = r => padL + ((r - xMin) / (xMax - xMin || 1)) * innerW;
+  const sy = v => padT + (1 - (v - yMin) / (yMax - yMin || 1)) * innerH;
+  // Plot dots colored by verdict
+  const colorOf = (v) => ({GREEN:'#3fb950',YELLOW:'#d29922',RED:'#f85149'})[v] || '#888';
+  const dots = curve.map(p => `<circle cx="${sx(p.rate).toFixed(1)}" cy="${sy(p.base_irr).toFixed(1)}" r="4" fill="${colorOf(p.verdict)}"><title>rate ${(p.rate*100).toFixed(1)}%, IRR ${(p.base_irr*100).toFixed(1)}%, ${p.verdict}, DSCR ${p.base_dscr.toFixed(2)}</title></circle>`).join('');
+  // Line
+  const linePts = curve.map(p => `${sx(p.rate).toFixed(1)},${sy(p.base_irr).toFixed(1)}`).join(' ');
+  // Current rate marker
+  let currentMark = '';
+  if (currentRate != null) {
+    const x = sx(currentRate);
+    currentMark = `<line x1="${x}" y1="${padT}" x2="${x}" y2="${H-padB}" stroke="#7ee787" stroke-dasharray="3,3" stroke-width="1"/>
+      <text x="${x+4}" y="${padT+10}" fill="#7ee787" font-size="10">your rate</text>`;
+  }
+  // Axis labels
+  const xTicks = curve.map(p => `<text x="${sx(p.rate).toFixed(1)}" y="${H-padB+14}" text-anchor="middle" font-size="9" fill="#888">${(p.rate*100).toFixed(1)}%</text>`).join('');
+  // Y ticks (3 evenly spaced)
+  const yT0 = yMin, yT2 = yMax, yT1 = (yMin + yMax) / 2;
+  const yTicks = [yT0, yT1, yT2].map(v =>
+    `<line x1="${padL-3}" y1="${sy(v).toFixed(1)}" x2="${padL}" y2="${sy(v).toFixed(1)}" stroke="#888"/>
+     <text x="${padL-5}" y="${(sy(v)+3).toFixed(1)}" text-anchor="end" font-size="9" fill="#888">${(v*100).toFixed(0)}%</text>`
+  ).join('');
+  // Verdict-flip detection
+  const flipMsg = (() => {
+    let prev = curve[0].verdict;
+    for (const p of curve) {
+      if (p.verdict !== prev) {
+        return `Flips ${prev}→${p.verdict} at ${(p.rate*100).toFixed(1)}%`;
+      }
+      prev = p.verdict;
+    }
+    return `Stays <span class="${({GREEN:'text-green',YELLOW:'text-yellow',RED:'text-red'})[curve[0].verdict]||''}">${curve[0].verdict}</span> across 5.5–9% — rate is not the binding constraint`;
+  })();
+  return `
+    <div class="bg-card rounded border border-line p-4">
+      <div class="flex items-baseline justify-between mb-1">
+        <div class="text-xs uppercase tracking-wide text-muted">Mortgage rate sensitivity</div>
+        <div class="text-xs ${currentRate != null ? '' : 'text-muted'}">${flipMsg}</div>
+      </div>
+      <div class="text-xs text-muted mb-2">Base-case IRR vs mortgage rate, holding everything else fixed. Dots colored by verdict at that rate.</div>
+      <svg viewBox="0 0 ${W} ${H}" class="w-full">
+        <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H-padB}" stroke="#444"/>
+        <line x1="${padL}" y1="${(H-padB).toFixed(1)}" x2="${W-padR}" y2="${(H-padB).toFixed(1)}" stroke="#444"/>
+        ${yTicks}
+        <polyline points="${linePts}" fill="none" stroke="#58a6ff" stroke-width="1.5"/>
+        ${dots}
+        ${currentMark}
+        ${xTicks}
+        <text x="${padL/2}" y="${padT-2}" text-anchor="middle" font-size="10" fill="#888" transform="rotate(-90 ${padL/2-12} ${H/2})">IRR</text>
+      </svg>
+    </div>`;
 }
 
 function renderPostTaxIRR(d, taxBracket) {
@@ -1897,6 +2006,74 @@ function initPipelineHandlers() {
   document.getElementById('buyboxRunStress')?.addEventListener('click', stressFromBuyBox);
 }
 
+// ---- Data freshness badge -----------------------------------------------
+
+async function loadFreshnessBadge() {
+  try {
+    const r = await fetch('/api/freshness');
+    if (!r.ok) return;
+    const d = await r.json();
+    const badge = document.getElementById('freshnessBadge');
+    if (!badge) return;
+    // Find the most recent ZHVI date as the headline
+    const zhvi = d.sources.find(s => s.source === 'zillow_zhvi');
+    const date = zhvi?.latest?.split('T')[0]?.slice(0, 7) || '?';
+    badge.textContent = d.any_stale ? `⚠ data: ${date} (${d.stale_count} stale)` : `✓ data: ${date}`;
+    badge.classList.remove('text-muted', 'border-line');
+    if (d.any_stale) {
+      badge.classList.add('text-yellow', 'border-yellow');
+    } else {
+      badge.classList.add('text-green', 'border-green');
+    }
+    badge._data = d;
+  } catch (e) { /* silent — non-critical */ }
+}
+
+async function openFreshnessModal() {
+  document.getElementById('freshnessModal').classList.remove('hidden');
+  const body = document.getElementById('freshnessBody');
+  body.innerHTML = spinnerHTML('Checking data freshness…');
+  try {
+    const r = await fetch('/api/freshness');
+    const d = await r.json();
+    const rows = d.sources.map(s => {
+      const color = s.error ? 'text-red'
+                  : s.stale ? 'text-yellow'
+                  : 'text-green';
+      const status = s.error ? `❌ error: ${escapeHtml(s.error)}`
+                    : s.stale ? `⚠ stale (${s.days_since}d / max ${s.stale_after_days}d)`
+                    : `✓ fresh (${s.days_since}d ago)`;
+      return `
+        <tr class="border-t border-line">
+          <td class="py-2 pr-3 font-medium">${escapeHtml(s.label)}</td>
+          <td class="py-2 pr-3 text-xs text-muted">${escapeHtml(s.source)}</td>
+          <td class="py-2 pr-3 tabular-nums">${escapeHtml(s.latest || '—')}</td>
+          <td class="py-2 pr-3 text-right tabular-nums text-muted">${(s.rows||0).toLocaleString()}</td>
+          <td class="py-2 pr-3 ${color}">${status}</td>
+        </tr>`;
+    }).join('');
+    body.innerHTML = `
+      <div class="text-xs text-muted mb-3">
+        Each table is checked against a "stale after N days" threshold. Stale data warps rankings.
+        Rerun ingest jobs to refresh — see <code class="text-fg">reip ingest --help</code>.
+      </div>
+      <table class="w-full text-sm">
+        <thead class="text-xs uppercase tracking-wide text-muted">
+          <tr><th class="text-left py-2 pr-3">Source</th><th class="text-left py-2 pr-3">Table</th><th class="text-left py-2 pr-3">Latest</th><th class="text-right py-2 pr-3">Rows</th><th class="text-left py-2 pr-3">Status</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch (e) {
+    body.innerHTML = `<div class="text-red">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function closeFreshnessModal() {
+  document.getElementById('freshnessModal').classList.add('hidden');
+}
+window.openFreshnessModal = openFreshnessModal;
+window.closeFreshnessModal = closeFreshnessModal;
+
 // Boot
 document.addEventListener('DOMContentLoaded', () => {
   renderUwForm();
@@ -1906,5 +2083,6 @@ document.addEventListener('DOMContentLoaded', () => {
   loadDeals();
   updatePipelineCount();
   initPipelineHandlers();
+  loadFreshnessBadge();
   go('dashboard');
 });

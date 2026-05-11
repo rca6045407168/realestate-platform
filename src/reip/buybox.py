@@ -56,11 +56,25 @@ _US_STATES = {
     "Wisconsin": "WI", "Wyoming": "WY", "District of Columbia": "DC",
 }
 
-def _to_state_code(s: Optional[str]) -> Optional[str]:
-    """Normalize 'Missouri' / 'MO' / 'mo' / None → 'MO' or None."""
-    if not s:
+def _to_state_code(s) -> Optional[str]:
+    """Normalize 'Missouri' / 'MO' / 'mo' / None / NaN → 'MO' or None."""
+    if s is None:
         return None
+    # Handle pandas NaN / numpy NaN / non-string types (zip_returns can yield those)
+    if not isinstance(s, str):
+        try:
+            import math
+            if isinstance(s, float) and math.isnan(s):
+                return None
+        except Exception:
+            pass
+        try:
+            s = str(s)
+        except Exception:
+            return None
     s = s.strip()
+    if not s or s.lower() == "nan":
+        return None
     if len(s) == 2:
         return s.upper()
     return _US_STATES.get(s) or _US_STATES.get(s.title())
@@ -82,10 +96,10 @@ class BuyBox:
     target_rent_high: float
     target_rehab_light: float
     target_rehab_heavy: float
-    # ---- ARV (trend-based, see arv_method) ----
+    # ---- ARV ----
     arv_now: float                # value at zhvi today (no rehab uplift)
-    arv_trend_12mo: float          # ZHVI × (1 + 12mo_growth × decay)
-    arv_method: str               # "trend-based" until comp-based ships
+    arv_trend_12mo: float          # trend-based: ZHVI × (1 + 12mo_growth × decay)
+    arv_method: str               # primary method label
     # ---- gate-targeted thresholds ----
     target_cap_rate: float
     floor_cap_rate: float
@@ -97,6 +111,8 @@ class BuyBox:
     vacancy_used: float
     # ---- climate exposure (full ClimateScore dict if scored, else None) ----
     climate: Optional[dict] = None
+    # ---- sales-based ARV (Redfin Data Center) — None if redfin_market lacks data ----
+    arv_sales_based: Optional[dict] = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -259,6 +275,8 @@ def derive(con, zip_code: str, archetype_hint: Optional[str] = None) -> Optional
         for n in climate_score.notes[:2]:
             notes.append(n)
 
+    sales_based = arv_sales_based(con, str(z).zfill(5))
+
     return BuyBox(
         zip=str(z).zfill(5), state=state, cbsa_code=cbsa_code, cbsa_name=cbsa_name,
         archetype_hint=archetype_hint,
@@ -267,7 +285,9 @@ def derive(con, zip_code: str, archetype_hint: Optional[str] = None) -> Optional
         target_rent_low=target_rent_low, target_rent_mid=target_rent_mid,
         target_rent_high=target_rent_high,
         target_rehab_light=target_rehab_light, target_rehab_heavy=target_rehab_heavy,
-        arv_now=round(zhvi), arv_trend_12mo=arv_trend, arv_method="trend-based (ZHVI × half-decayed 12mo growth, capped ±10%)",
+        arv_now=round(zhvi), arv_trend_12mo=arv_trend,
+        arv_method="trend-based (ZHVI × half-decayed 12mo growth, capped ±10%)",
+        arv_sales_based=sales_based,
         target_cap_rate=target_cap_rate, floor_cap_rate=floor_cap_rate,
         typical_deal=typical_deal,
         regime_label=regime_label, regime_score=regime_score,
@@ -281,19 +301,83 @@ def to_dict(b: BuyBox) -> dict:
     return asdict(b)
 
 
-# ---- Standalone ARV ---------------------------------------------------------
+# ---- ARV estimators ---------------------------------------------------------
 #
-# Reusable trend-based ARV estimator. Used by the buy-box, but also exposed
-# as its own endpoint so consumers can ask "what's the ARV horizon for this
-# zip" without pulling the full buy-box payload.
+# Two methods, used together for honesty:
 #
-# Comp-based ARV (the real BRRRR-grade answer) is on the roadmap but blocked
-# on this network: Redfin's `gis-csv` endpoint returns `PAST SALE` rows, but
-# the `market` parameter is silently ignored from non-residential IPs and the
-# default region (Seattle) is what comes back. Probing this on 2026-05-10
-# confirmed the same wall the listings_search MARKETS allowlist already
-# documents. Until a residential-IP proxy or commercial comp feed (Black
-# Knight, ATTOM) is wired in, trend-based is the honest answer.
+#   1. trend-based (ZHVI × half-decayed 12mo growth, capped ±10%/yr) —
+#      the model-based estimate. Smooth and projectable but Zillow-
+#      smoothed median, not actual sales.
+#
+#   2. sales-based — uses the `redfin_market` table (loaded from
+#      Redfin Data Center): trailing-3mo median_sale_price at the zip
+#      level, plus 12mo trend, sale-to-list ratio, days on market.
+#      This is the *actual transacted price* in the zip, not a smoothed
+#      index. Closer to comp-based but uses zip medians, not
+#      bed/bath-matched comps. Honest middle ground.
+#
+# Full bed/bath/sqft-matched comp-based ARV (BRRRR-grade) still needs
+# either Redfin's live sold-comp endpoint (blocked from this network's
+# IP — `gis-csv` returns Seattle regardless of `market` param) or a
+# commercial feed (ATTOM, Black Knight). Documented in commit ab1abc6.
+
+def arv_sales_based(con, zip_code: str, lookback_months: int = 3) -> Optional[dict]:
+    """Sales-based ARV from Redfin Data Center zip-level history.
+
+    Uses the trailing `lookback_months` of `redfin_market` rows to compute:
+      - arv: median of median_sale_price across the window (more robust
+        than a single month given thin samples in small zips)
+      - sale_to_list: average of sale-to-list ratio (1.0 = at-list; >1
+        = above-list bidding)
+      - median_days_on_market: latest-month value
+      - homes_sold_trailing: total sales in the window (sample-size
+        confidence)
+      - chg_12mo: vs. the same window 12 months back
+
+    Returns None if there are zero sales in the lookback window.
+    """
+    zip5 = str(zip_code).zfill(5)
+    rows = con.execute("""
+        SELECT period, median_sale_price, median_list_price, homes_sold,
+               sale_to_list, median_days_on_market
+        FROM redfin_market
+        WHERE geo_type='zip' AND geo_id = ?
+        ORDER BY period DESC
+    """, [zip5]).df()
+    if rows.empty:
+        return None
+    recent = rows.head(lookback_months).dropna(subset=["median_sale_price"])
+    if recent.empty:
+        return None
+    # 12mo-ago window for trend
+    prior = rows.iloc[lookback_months + 9 : lookback_months + 9 + lookback_months]\
+                 .dropna(subset=["median_sale_price"])
+
+    import math
+    arv = float(recent["median_sale_price"].median())
+    chg_12mo = None
+    if not prior.empty:
+        prior_med = float(prior["median_sale_price"].median())
+        if prior_med > 0:
+            chg_12mo = round((arv / prior_med) - 1, 4)
+    s2l = recent["sale_to_list"].dropna()
+    avg_sale_to_list = float(s2l.mean()) if not s2l.empty else None
+    if avg_sale_to_list is not None and math.isnan(avg_sale_to_list):
+        avg_sale_to_list = None
+    dom = recent["median_days_on_market"].dropna()
+    median_dom = int(dom.iloc[0]) if not dom.empty else None
+    homes_sold_trailing = int(recent["homes_sold"].fillna(0).sum())
+    return {
+        "method":               "sales-based (Redfin Data Center zip medians)",
+        "arv":                  round(arv),
+        "lookback_months":      lookback_months,
+        "homes_sold_trailing":  homes_sold_trailing,
+        "chg_12mo":             chg_12mo,
+        "avg_sale_to_list":     round(avg_sale_to_list, 4) if avg_sale_to_list else None,
+        "median_days_on_market": median_dom,
+        "as_of":                str(recent["period"].iloc[0]).split("T")[0] if not recent.empty else None,
+    }
+
 
 def arv_estimate(con, zip_code: str,
                  horizons_years: tuple[float, ...] = (0.0, 0.5, 1.0, 2.0)) -> Optional[dict]:
@@ -340,14 +424,14 @@ def arv_estimate(con, zip_code: str,
 
     caveats = [
         "Trend-based estimate from Zillow ZHVI medians. Use for back-of-envelope only.",
-        "For BRRRR-grade ARV you need recent sold COMPS (matched sqft / beds / baths within 0.5mi). "
-        "The Redfin sold-comp API is reachable from this codebase but geographically pinned to Seattle "
-        "from non-residential IPs; comp-based ARV is on the roadmap pending a residential proxy or "
+        "Sales-based ARV (when available) uses actual Redfin transactions — trust that more "
+        "than trend-based for refi-window decisions.",
+        "Bed/bath/sqft-matched comp ARV (full BRRRR-grade) still requires a residential proxy or "
         "commercial feed (ATTOM/Black Knight).",
         "If the market is contracting (12mo < 0%), trend-extending into a refi window 6–12 months "
         "out is itself risky — your lender may appraise below your projection.",
     ]
-    return {
+    out = {
         "zip": str(z).zfill(5),
         "state": _to_state_code(state_raw),
         "cbsa_code": cbsa_code, "cbsa_name": cbsa_name,
@@ -358,3 +442,8 @@ def arv_estimate(con, zip_code: str,
         "horizons": horizons,
         "caveats": caveats,
     }
+    # Add sales-based ARV when we have Redfin data for the zip
+    sales = arv_sales_based(con, zip_code)
+    if sales:
+        out["sales_based"] = sales
+    return out

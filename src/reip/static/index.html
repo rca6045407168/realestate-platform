@@ -93,6 +93,11 @@
       <h1 class="text-2xl text-accent font-semibold">reip</h1>
       <div class="text-muted text-sm">deal-screening + underwriting platform</div>
     </div>
+    <div class="flex items-center gap-3">
+      <button id="freshnessBadge" onclick="openFreshnessModal()"
+              class="text-xs px-2 py-1 rounded border border-line text-muted hover:border-accent hover:text-accent"
+              title="Click for full data freshness breakdown">data: …</button>
+    </div>
     <nav class="flex gap-2 text-sm">
       <button onclick="go('dashboard')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">MSA dashboard</button>
       <button onclick="go('buy')" class="navlink px-3 py-1.5 rounded bg-card border border-line hover:border-accent">Buy ideas</button>
@@ -224,6 +229,10 @@
       <input id="tzRate" type="number" step="0.001" value="0.07" class="bg-bg border border-line rounded px-2 py-1 text-sm w-20">
       <label class="text-sm text-muted">Limit</label>
       <input id="tzLimit" type="number" value="100" class="bg-bg border border-line rounded px-2 py-1 text-sm w-20">
+      <label class="text-sm text-muted flex items-center gap-1.5 cursor-pointer" title="Demote zips in states where you already have ≥30% of saved equity. Built from your pipeline.">
+        <input id="tzDiversify" type="checkbox" class="cursor-pointer">
+        Diversify from my pipeline
+      </label>
       <button id="tzRefresh" class="ml-auto px-3 py-1.5 rounded bg-accent text-bg font-medium text-sm">Refresh</button>
     </div>
     <div id="tzMeta" class="text-xs text-muted mb-3"></div>
@@ -291,6 +300,17 @@
       <div id="portfolioHost" class="space-y-4"></div>
     </div>
   </section>
+
+  <!-- ============== FRESHNESS MODAL ============== -->
+  <div id="freshnessModal" class="hidden fixed inset-0 bg-black/70 z-40 flex items-start justify-center pt-16 p-6 overflow-y-auto">
+    <div class="bg-card border border-line rounded-lg max-w-2xl w-full p-5 space-y-4">
+      <div class="flex items-baseline justify-between">
+        <h3 class="text-lg font-semibold">Data freshness</h3>
+        <button onclick="closeFreshnessModal()" class="text-muted hover:text-fg text-xl leading-none">×</button>
+      </div>
+      <div id="freshnessBody" class="text-sm">Loading…</div>
+    </div>
+  </div>
 
   <!-- ============== BUY BOX MODAL (overlay; not a screen) ============== -->
   <div id="buyboxModal" class="hidden fixed inset-0 bg-black/70 z-40 flex items-start justify-center pt-12 p-6 overflow-y-auto">
