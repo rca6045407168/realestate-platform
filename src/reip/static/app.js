@@ -1609,6 +1609,16 @@ function persistDeals() {
 }
 
 function newDealFromStress(inputs, stressResult, opts = {}) {
+  // Dedupe: if a deal with matching price/rent/state already exists in
+  // pipeline, refresh it instead of creating a duplicate. Guards against
+  // double-click Save and racing concurrent fetches.
+  const existing = DEALS.find(d => _dealInputsMatch(d.inputs, inputs));
+  if (existing && !opts.forceNew) {
+    existing.stress = stressResult;
+    existing.updated_at = Date.now();
+    persistDeals();
+    return existing;
+  }
   const verdict = stressResult?.gate?.verdict;
   const status = opts.status || (verdict === 'GREEN' ? 'underwritten' : 'researching');
   const deal = {
@@ -1625,6 +1635,16 @@ function newDealFromStress(inputs, stressResult, opts = {}) {
   DEALS.unshift(deal);
   persistDeals();
   return deal;
+}
+
+function _dealInputsMatch(a, b) {
+  // Two deals are "the same" if price, rent, and state line up — that's
+  // the smallest signature an investor would recognize as identical.
+  if (!a || !b) return false;
+  const round = (x) => Math.round((+x || 0));
+  return round(a.purchase_price) === round(b.purchase_price)
+      && round(a.monthly_rent)   === round(b.monthly_rent)
+      && (a.state || null)       === (b.state || null);
 }
 
 function buildPipelineSummary() {
@@ -1925,10 +1945,14 @@ async function runStress() {
 
 function saveStressToPipeline() {
   if (!LAST_STRESS_RESULT) return;
+  const before = DEALS.length;
   const d = newDealFromStress(LAST_STRESS_RESULT.inputs, LAST_STRESS_RESULT.result);
+  const wasUpdated = DEALS.length === before;  // dedupe matched
   const btn = document.getElementById('stressSaveBtn');
   if (btn) {
-    btn.textContent = '✓ Saved — open Pipeline';
+    btn.textContent = wasUpdated
+      ? '✓ Updated existing deal — open Pipeline'
+      : '✓ Saved — open Pipeline';
     btn.classList.remove('bg-accent', 'text-bg');
     btn.classList.add('border', 'border-green', 'text-green');
     btn.onclick = () => go('pipeline');

@@ -21,6 +21,36 @@ What's new vs. pikachu:
 - DuckDB store (one file, fast analytics) instead of CSV append
 - Resilient ingest: per-source caching, partial failure tolerated
 
+## What's new (May 2026)
+
+The platform got the operator layer it needed. Each surface is data-grounded:
+
+| Surface | What it does | Data |
+|---|---|---|
+| **Stress test** | Multi-scenario underwriter — base/stress/worst with state-aware overlays (FL hurricane, TX tax, CA rent cap, rust-belt rehab) + GREEN/YELLOW/RED gate + walk-away price | Per-state effective tax rates, default opex/vacancy from ACS |
+| **Buy box per zip** | Translates a zip's macro data into target price/rent/rehab bands + trend ARV + sales-based ARV + climate exposure + "typical deal" you can stress-test in one click | ZHVI / ZORI / state tax / Redfin Data Center sales |
+| **Climate risk overlay** | Per-zip 0-100 score from real FEMA NFIP damage history. Fort Myers FL (Lee County, Hurricane Ian) lands at 100/100 — $1.2B in 5y payouts. Amplifies worst-case stress scenarios | FEMA NFIP claims by county-year |
+| **Deal pipeline** | localStorage pipeline with status pills (researching → underwritten → offer → closed/passed), notes, climate column, side-by-side compare modal | Client state |
+| **Portfolio view** | Roll-up across saved deals: equity, monthly cash flow (pre + post-tax), weighted IRR, depreciation tax savings, concentration warnings (single-state / climate-correlated / RED-equity / thin DSCR), per-deal pre-vs-post-tax table | tax.py models active vs passive deduction |
+| **50-year strategy tab** | Reproducible empirical analysis: 8-regime decomposition, drawdown panel, momentum transition matrix, 34-year strategy backtest, rent yield panel — all against current FHFA HPI + ZORI | 410 metros 1975-2025, 264 ZORI metros 2015-2024, 15K momentum transitions |
+| **Ask reip chat** | Pipeline-aware — chat sees your saved deals + notes + verdicts and references them in answers. Can call `buy_box`, `stress_test`, `top_zips`, `top_msas`, `parse_remarks` as tools | Claude Sonnet, OAuth fallback to Claude Code |
+| **Top Zips diversify mode** | "Diversify from my pipeline" checkbox — computes state-concentration from saved equity and demotes already-concentrated states in the ranking | Pipeline localStorage + zip_returns rank |
+| **Data freshness badge** | Publication-lag-aware: only flags "stale" when the publisher has released a newer file we haven't pulled. Click for per-source breakdown | source-by-source cadence rules |
+
+### Strategy summary (from `docs/STRATEGY.md`)
+
+50-year backtest findings:
+
+- **Geography matters more than timing.** Median 30y CAGR has 1.8pp spread; within-regime spreads are 8-12pp/yr.
+- **Median worst drawdown: -16%, median time-to-recover: 9.8 years.** Worst-decile metros (Merced -65%, Vegas -61%, Modesto -60%) took 14-15 years.
+- **3-year momentum is real.** Top-Q-past stays top-half 64% of the time. Forward 3y return is +18% (Q1) vs +10.6% (Q4) — 7.4pp/yr edge.
+- **Sun Belt Growth beat CA Coastal** over 34 years (+5.09% / -26% DD vs +4.66% / -36% DD).
+- **Yield ≠ no-growth.** Correlation only -0.26. Rockford IL: 8.77% yield AND +183% appreciation 2015-2024.
+
+Recommended allocation: 40% Sun Belt Growth (momentum-screened) / 30% All-Weather lifestyle / 20% Cashflow Heartland / 10% speculative. Climate-severe capped at 10%. Hold ≥10 years.
+
+Run it: `reip strategy backtest` or browse the **Strategy** tab in the SPA.
+
 ## Quick start
 
 ```bash

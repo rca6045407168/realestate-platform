@@ -360,6 +360,84 @@ def underwrite(purchase_price, rehab_cost, arv, monthly_rent, mortgage_rate,
         click.echo(underwriting.sensitivity(a).to_string(index=False, float_format=lambda x: f"{x:.3f}"))
 
 
+@cli.group()
+def strategy():
+    """50-year empirical strategy analyses (see docs/STRATEGY.md)."""
+    pass
+
+
+@strategy.command("backtest")
+@click.option("--section", type=click.Choice(["regimes", "drawdowns", "momentum",
+                                                "strategies", "rent_yield", "all"]),
+              default="all", help="Which analysis to run")
+@click.option("--as-json", "as_json", is_flag=True, help="Emit raw JSON (default: pretty tables)")
+def strategy_backtest(section, as_json):
+    """Run the 50-year strategy backtests against current data.
+
+    Default emits human-readable tables for each section. --as-json emits
+    the raw payload for piping into other tools.
+    """
+    from . import strategy as strat
+    con = connect()
+    if section == "all":
+        report = strat.full_report(con)
+    else:
+        fn = {"regimes":    strat.regime_decomposition,
+              "drawdowns":  strat.drawdown_panel,
+              "momentum":   strat.momentum_persistence,
+              "strategies": strat.strategy_backtest,
+              "rent_yield": strat.rent_yield_panel}[section]
+        report = {section: fn(con)}
+    if as_json:
+        click.echo(json.dumps(report, indent=2, default=str))
+        return
+    if "regimes" in report:
+        click.echo("\n=== REGIMES 1985-2024 ===")
+        for r in report["regimes"]:
+            if "median_cagr" not in r:
+                continue
+            click.echo(f"  {r['regime']:<26s} {r['years']}  n={r['n']}  "
+                       f"median {r['median_cagr']*100:+5.1f}%  "
+                       f"P10→P90 [{r['p10_cagr']*100:+.1f}%, {r['p90_cagr']*100:+.1f}%]  "
+                       f"best: {r['best_metro'][:30]} ({r['best_cagr']*100:+.1f}%)")
+    if "drawdowns" in report:
+        d = report["drawdowns"]
+        click.echo(f"\n=== DRAWDOWNS (n={d['n_metros']}) ===")
+        click.echo(f"  median {d['median_max_dd_pct']:.1f}%   P10 worst {d['p10_max_dd_pct']:.1f}%   "
+                   f"median TTR {d['median_ttr_months']/12:.1f}yr")
+        click.echo("  worst 10:")
+        for r in d["worst"][:10]:
+            ttr = f"{r['ttr_months']/12:.1f}yr" if r.get('ttr_months') else "never"
+            click.echo(f"    {r['name']:<40s} {r['max_dd_pct']:6.1f}%   {ttr}")
+        click.echo("  shallowest 10 (boring tier):")
+        for r in d["best"][:10]:
+            ttr = f"{r['ttr_months']/12:.1f}yr" if r.get('ttr_months') else "never"
+            click.echo(f"    {r['name']:<40s} {r['max_dd_pct']:6.1f}%   {ttr}")
+    if "momentum" in report:
+        m = report["momentum"]
+        click.echo(f"\n=== MOMENTUM ({m['window_years']}y window, n={m['n_transitions']}) ===")
+        click.echo(f"  P(top→top) {m['p_top_stays_top']*100:.1f}%   "
+                   f"P(top→bottom) {m['p_top_to_bottom']*100:.1f}%   "
+                   f"Q1−Q4 fwd edge: {m['top_minus_bottom_fwd_return']*100:+.1f}pp")
+        for r in m["fwd_returns_by_quartile"]:
+            click.echo(f"    Past-Q{r['past_quartile']} → fwd-{m['window_years']}y mean "
+                       f"{r['mean_fwd_return']*100:+5.1f}%   median {r['median_fwd_return']*100:+5.1f}%   n={r['n']:,}")
+    if "strategies" in report:
+        click.echo("\n=== STRATEGIES (34y backtest) ===")
+        for s in report["strategies"]:
+            if "error" in s: continue
+            click.echo(f"  {s['strategy']:<18s} {s['holding_multiple']:5.2f}x  "
+                       f"CAGR {s['cagr']*100:+5.2f}%  DD {s['max_dd_pct']:.1f}%  "
+                       f"TTR {(s['time_to_recover_months'] or 0)/12:.1f}yr")
+    if "rent_yield" in report:
+        ry = report["rent_yield"]
+        click.echo(f"\n=== TOP 10 TOTAL RETURN 2015-2024 (n={ry['n_metros']}, yield-vs-growth corr={ry['corr_yield_vs_growth']:+.2f}) ===")
+        for r in ry["top_total_return"][:10]:
+            click.echo(f"  {r['cbsa_name']:<40s} yield {(r.get('yield_now') or 0)*100:5.2f}%   "
+                       f"appr {(r.get('price_appr_9y') or 0)*100:+6.0f}%   "
+                       f"total CAGR {(r.get('total_cagr_9y') or 0)*100:+5.1f}%")
+
+
 @cli.command()
 @click.option("--host", default="127.0.0.1")
 @click.option("--port", default=8787, type=int)

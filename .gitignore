@@ -16,3 +16,7 @@ data/reip-report.html
 dist/
 build/
 *.egg-info/
+
+# Local-only Claude/IDE configs
+.claude/
+
