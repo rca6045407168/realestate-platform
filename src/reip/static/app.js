@@ -1322,8 +1322,12 @@ function closeBuyBox() {
 
 function stressFromBuyBox() {
   if (!LAST_BUYBOX) return;
-  const d = LAST_BUYBOX.typical_deal;
+  // Snapshot EVERYTHING we need before closing — closeBuyBox() nulls
+  // LAST_BUYBOX synchronously, and accessing it inside the setTimeout
+  // would silently throw, halting the rest of this callback.
+  const d   = LAST_BUYBOX.typical_deal;
   const zip = LAST_BUYBOX.zip;
+  const arv = LAST_BUYBOX.arv_trend_12mo;
   // Switch to Stress tab and fill inputs
   go('stress');
   closeBuyBox();
@@ -1338,7 +1342,7 @@ function stressFromBuyBox() {
     $('stIns').value   = d.insurance_annual;
     $('stTax').value   = d.property_tax_rate;
     $('stHoa').value   = 0;
-    $('stARV').value   = LAST_BUYBOX.arv_trend_12mo || '';
+    $('stARV').value   = arv || '';
     if ($('stZip')) $('stZip').value = zip || '';
     if (d.state) {
       const sel = $('stState');
