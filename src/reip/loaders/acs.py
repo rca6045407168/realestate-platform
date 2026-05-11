@@ -49,14 +49,24 @@ def _fetch(year: int, var_codes: list[str]) -> pd.DataFrame:
 
 
 def load(con: duckdb.DuckDBPyConnection, years: list[int] | None = None) -> int:
-    """Pull both endpoints needed for 5-yr CAGR. ACS lags ~1 year; we use
-    2018 (5-yr ending 2018) and 2023 (5-yr ending 2023) for a 5-yr delta."""
-    years = years or [2018, 2023]
+    """Pull endpoints needed for 5-yr CAGR + the current snapshot.
+
+    ACS 5-year datasets lag ~12 months from the trailing year — the
+    Y-ending ACS5 typically lands in Dec of (Y+1). We pull:
+      - 2019 (5y-ending 2019, baseline)
+      - 2024 (5y-ending 2024, current)
+    plus 2018 + 2023 for backwards compatibility with cached scoring.
+
+    If the publisher hasn't released a year yet, that year is skipped
+    silently — the downstream scorer uses MAX(year) anyway.
+    """
+    years = years or [2018, 2019, 2023, 2024]
     total = 0
     for y in years:
         try:
             df = _fetch(y, list(VARS.keys()))
             total += upsert_df(con, "acs_county", df)
+            print(f"  acs {y}: {len(df)} rows")
         except Exception as e:
-            print(f"ACS {y}: {e}")
+            print(f"  acs {y}: skipped ({e})")
     return total
