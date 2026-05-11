@@ -385,6 +385,27 @@ def full_report(con) -> dict:
 
 _STABILITY_CACHE: dict[str, dict] = {}
 
+# Several large MSAs are subdivided into Metropolitan Divisions in the FHFA
+# HPI series. zip_county_xwalk maps to the MSA code, but FHFA reports under
+# the largest division code. Fall back to the division when the MSA itself
+# isn't in fhfa_hpi_metro. (Mapping below: MSA → largest Division.)
+_MSA_TO_FHFA_DIVISION = {
+    "14460": "14454",   # Boston-Cambridge-Newton → Boston-Cambridge-Newton (Div)
+    "16980": "16974",   # Chicago-Naperville-Elgin → Chicago-Naperville-Evanston (Div)
+    "19100": "19124",   # Dallas-Fort Worth-Arlington → Dallas-Plano-Irving (Div)
+    "19820": "19804",   # Detroit-Warren-Dearborn → Detroit-Dearborn-Livonia (Div)
+    "31080": "31084",   # Los Angeles-Long Beach-Anaheim → LA-Long Beach-Glendale (Div)
+    "33100": "33124",   # Miami-Fort Lauderdale-Pompano Beach → Miami-Miami Beach-Kendall (Div)
+    "35620": "35614",   # New York-Newark-Jersey City → New York-Jersey City-White Plains (Div)
+    "37980": "37964",   # Philadelphia-Camden-Wilmington → Philadelphia (Div)
+    "41860": "41884",   # San Francisco-Oakland-Fremont → San Francisco-Oakland-Hayward (Div)
+    "42660": "42644",   # Seattle-Tacoma-Bellevue → Seattle-Bellevue-Kent (Div)
+    "47900": "47894",   # Washington-Arlington-Alexandria → DC-Arlington-Alexandria (Div)
+    "12060": None,      # Atlanta — single, no division
+    "26420": None,      # Houston — single
+    "37100": None,      # Oxnard-Thousand Oaks-Ventura — single
+}
+
 def compute_stability_panel(con) -> dict[str, dict]:
     """Return {cbsa_code: {max_dd_pct, ttr_months, tier}} for every metro."""
     if _STABILITY_CACHE:
@@ -412,5 +433,187 @@ def compute_stability_panel(con) -> dict[str, dict]:
 
 
 def stability_for(con, cbsa_code: str) -> Optional[dict]:
-    """Return stability dict for a single CBSA, or None if no data."""
-    return compute_stability_panel(con).get(str(cbsa_code))
+    """Return stability dict for a CBSA, falling back to the FHFA Division
+    code for split metros (SF, NYC, LA, Chicago, DC, Boston, etc)."""
+    panel = compute_stability_panel(con)
+    c = str(cbsa_code)
+    if c in panel:
+        return panel[c]
+    # Try the FHFA division fallback
+    div = _MSA_TO_FHFA_DIVISION.get(c)
+    if div and div in panel:
+        return panel[div]
+    return None
+
+
+# ---- pipeline resilience score --------------------------------------------
+#
+# Given a user's pipeline of saved deals, compute "what would have happened
+# in 2007-2012 if you'd held this exact portfolio?" Uses FHFA HPI 1985-now
+# stability per CBSA, weighted by deal equity.
+#
+# Inputs: list of deal dicts (as Portfolio.aggregate expects). Each carries
+# inputs.zip (preferred), inputs.state, inputs.purchase_price, inputs.ltv.
+#
+# Outputs:
+#   weighted_historical_max_dd_pct  — equity-weighted worst peak-to-trough
+#   weighted_recovery_years         — equity-weighted time-to-recover
+#   resilience_score                — 0-100 (100 = boring tier, 0 = full crash)
+#   tier_distribution               — { tier: pct_of_equity }
+#   peer_benchmark                  — what All-Weather would have delivered
+#   gap_vs_benchmark                — DD difference
+
+# All-Weather composition's empirical stability — equity-weighted average of
+# the metros listed in STRATEGY_COMPOSITIONS["All-Weather"], computed once.
+_ALL_WEATHER_BENCHMARK_CACHE: Optional[dict] = None
+
+
+def _compute_all_weather_benchmark(con) -> dict:
+    """Drawdown profile of the All-Weather reference portfolio."""
+    global _ALL_WEATHER_BENCHMARK_CACHE
+    if _ALL_WEATHER_BENCHMARK_CACHE is not None:
+        return _ALL_WEATHER_BENCHMARK_CACHE
+    panel = compute_stability_panel(con)
+    rows = [panel[c] for c in ALL_WEATHER if c in panel]
+    if not rows:
+        _ALL_WEATHER_BENCHMARK_CACHE = {"max_dd_pct": None, "recovery_years": None}
+        return _ALL_WEATHER_BENCHMARK_CACHE
+    avg_dd = sum(r["max_dd_pct"] for r in rows) / len(rows)
+    finite_ttr = [r["ttr_months"] for r in rows if r.get("ttr_months") is not None]
+    avg_ttr_y = (sum(finite_ttr) / len(finite_ttr) / 12) if finite_ttr else None
+    _ALL_WEATHER_BENCHMARK_CACHE = {
+        "max_dd_pct":     round(avg_dd, 1),
+        "recovery_years": round(avg_ttr_y, 1) if avg_ttr_y else None,
+    }
+    return _ALL_WEATHER_BENCHMARK_CACHE
+
+
+def _deal_to_cbsa(con, deal: dict) -> Optional[str]:
+    """Best-effort: get CBSA for a deal. Prefer zip → cbsa; fall back to None."""
+    inp = deal.get("inputs") or {}
+    z = inp.get("zip")
+    if z:
+        try:
+            r = con.execute(
+                "SELECT c.cbsa_code FROM zip_county_xwalk z LEFT JOIN county_cbsa_xwalk c "
+                "USING (fips_county) WHERE z.zip = ? AND c.cbsa_code IS NOT NULL LIMIT 1",
+                [str(z).zfill(5)],
+            ).fetchone()
+            if r and r[0]:
+                return str(r[0])
+        except Exception:
+            pass
+    return None
+
+
+def _deal_equity(deal: dict) -> float:
+    inp = deal.get("inputs") or {}
+    price = float(inp.get("purchase_price") or 0)
+    ltv = float(inp.get("ltv") or 0.75)
+    rehab = float(inp.get("rehab_cost") or 0)
+    return price * (1 - ltv) + price * 0.03 + rehab
+
+
+def portfolio_resilience(con, deals: list[dict]) -> dict:
+    """Compute the equity-weighted historical drawdown + recovery for a
+    pipeline of deals, with a benchmark comparison."""
+    panel = compute_stability_panel(con)
+    bench = _compute_all_weather_benchmark(con)
+
+    total_eq = 0.0
+    weighted_dd = 0.0
+    weighted_ttr_months = 0.0
+    ttr_weight = 0.0
+    tier_eq: dict[str, float] = {}
+    mapped, unmapped = 0, 0
+    per_deal = []
+    for d in deals:
+        eq = _deal_equity(d)
+        if eq <= 0:
+            continue
+        total_eq += eq
+        cbsa = _deal_to_cbsa(con, d)
+        stab = stability_for(con, cbsa) if cbsa else None
+        if not stab:
+            unmapped += 1
+            tier_eq["Unknown"] = tier_eq.get("Unknown", 0) + eq
+            per_deal.append({
+                "label": d.get("label"),
+                "cbsa": None, "tier": None,
+                "historical_max_dd_pct": None,
+                "historical_recovery_years": None,
+                "equity": round(eq, 2),
+            })
+            continue
+        mapped += 1
+        weighted_dd += stab["max_dd_pct"] * eq
+        if stab.get("ttr_months") is not None:
+            weighted_ttr_months += stab["ttr_months"] * eq
+            ttr_weight += eq
+        tier_eq[stab["tier"]] = tier_eq.get(stab["tier"], 0) + eq
+        per_deal.append({
+            "label": d.get("label"),
+            "cbsa": cbsa, "tier": stab["tier"],
+            "historical_max_dd_pct": stab["max_dd_pct"],
+            "historical_recovery_years": round(stab["ttr_months"]/12, 1) if stab.get("ttr_months") else None,
+            "equity": round(eq, 2),
+        })
+
+    if total_eq <= 0:
+        return {"resilience_score": None, "error": "no equity"}
+
+    weighted_dd_pct = weighted_dd / total_eq if mapped else None
+    weighted_recovery_y = (weighted_ttr_months / ttr_weight / 12) if ttr_weight else None
+
+    # Score: linearly map weighted DD from -65% (worst observed = 0) to 0% (perfect = 100)
+    if weighted_dd_pct is not None:
+        score = max(0, min(100, round((weighted_dd_pct + 65) / 65 * 100)))
+    else:
+        score = None
+
+    # Tier distribution as percentages
+    tier_dist = {t: round(e / total_eq, 4) for t, e in tier_eq.items()}
+
+    # Gap vs benchmark
+    gap = (weighted_dd_pct - bench["max_dd_pct"]) if (
+        weighted_dd_pct is not None and bench.get("max_dd_pct") is not None) else None
+
+    return {
+        "resilience_score":              score,
+        "weighted_historical_max_dd_pct": round(weighted_dd_pct, 1) if weighted_dd_pct is not None else None,
+        "weighted_recovery_years":       round(weighted_recovery_y, 1) if weighted_recovery_y else None,
+        "deals_mapped":                  mapped,
+        "deals_unmapped":                unmapped,
+        "tier_distribution_by_equity":   tier_dist,
+        "per_deal":                      per_deal,
+        "benchmark":                     {"name": "All-Weather Lifestyle", **bench},
+        "gap_vs_benchmark_dd_pct":       round(gap, 1) if gap is not None else None,
+        "interpretation":                _resilience_interp(score, weighted_dd_pct, weighted_recovery_y, gap),
+    }
+
+
+def _resilience_interp(score, dd_pct, recovery_y, gap) -> str:
+    """One-paragraph plain-English interpretation."""
+    if score is None:
+        return "Not enough mapped deals to score this portfolio."
+    if score >= 80:
+        base = "Resilient. Historical worst-case for your composition is shallow."
+    elif score >= 60:
+        base = "Standard exposure. You'd absorb a typical recession drawdown."
+    elif score >= 40:
+        base = "Elevated risk. Historical equivalent took years to recover."
+    else:
+        base = "Fragile. This composition matches the metros that crashed hardest 2007-2012."
+    detail = ""
+    if dd_pct is not None:
+        detail += f" Equity-weighted historical max drawdown: {dd_pct:.1f}%."
+    if recovery_y:
+        detail += f" Time-to-recover: {recovery_y:.1f} years."
+    if gap is not None:
+        # gap = our_DD - benchmark_DD. Both are negative (drawdowns).
+        # More negative gap = worse than benchmark. Less negative = better.
+        if gap > 5:
+            detail += f" Beats the All-Weather benchmark by {gap:.1f}pp."
+        elif gap < -5:
+            detail += f" Trails the All-Weather benchmark by {abs(gap):.1f}pp deeper drawdown."
+    return base + detail

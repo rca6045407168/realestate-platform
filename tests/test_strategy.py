@@ -202,6 +202,85 @@ def test_strategy_endpoint_cache_keys_independent():
     assert set(r_full.keys()) == {"regimes", "drawdowns", "momentum", "strategies", "rent_yield"}
 
 
+def test_portfolio_resilience_scores_diverse_portfolios(con):
+    """Boring-tier deals → high score, Boom-Bust deals → low score."""
+    from reip import strategy
+    # Pittsburgh + Rochester NY: both Boring tier, ~-2 to -5% historical DD
+    boring_deals = [
+        {"label": "Pgh", "inputs": {"zip": "15213", "state": "PA", "purchase_price": 150_000,
+                                      "ltv": 0.75, "rehab_cost": 0}},
+        {"label": "Roc", "inputs": {"zip": "14611", "state": "NY", "purchase_price": 80_000,
+                                      "ltv": 0.75, "rehab_cost": 0}},
+    ]
+    boring = strategy.portfolio_resilience(con, boring_deals)
+    assert boring["resilience_score"] >= 80
+    assert boring["weighted_historical_max_dd_pct"] > -10
+
+    # Fort Myers + LA: both Boom-Bust, -50% to -65% historical DD
+    bust_deals = [
+        {"label": "FM", "inputs": {"zip": "33908", "state": "FL", "purchase_price": 300_000,
+                                     "ltv": 0.75, "rehab_cost": 0}},
+        {"label": "LA", "inputs": {"zip": "90001", "state": "CA", "purchase_price": 500_000,
+                                     "ltv": 0.75, "rehab_cost": 0}},
+    ]
+    bust = strategy.portfolio_resilience(con, bust_deals)
+    assert bust["resilience_score"] < boring["resilience_score"]
+    assert bust["weighted_historical_max_dd_pct"] < -25
+
+
+def test_portfolio_resilience_division_fallback(con):
+    """SF zip 94110 → CBSA 41860 (MSA) → falls back to FHFA Division 41884.
+    Without the fallback, SF deals would never map and resilience would be wrong."""
+    from reip import strategy
+    deals = [
+        {"label": "SF", "inputs": {"zip": "94110", "state": "CA", "purchase_price": 800_000,
+                                     "ltv": 0.75, "rehab_cost": 0}},
+    ]
+    r = strategy.portfolio_resilience(con, deals)
+    # Should have mapped successfully via the division fallback
+    assert r["deals_mapped"] >= 1
+    assert r["deals_unmapped"] == 0
+    assert r["weighted_historical_max_dd_pct"] is not None
+
+
+def test_portfolio_aggregate_returns_resilience(con):
+    """The /api/portfolio/aggregate endpoint should now include `resilience`."""
+    from fastapi.testclient import TestClient
+    from reip.api import app
+    client = TestClient(app)
+    body = {
+        "deals": [
+            {"label": "Pgh", "inputs": {"zip": "15213", "state": "PA",
+                                          "purchase_price": 150_000, "ltv": 0.75, "rehab_cost": 0},
+             "stress": {"gate": {"verdict": "GREEN"},
+                        "scenarios": [{"irr": 0.1, "dscr": 1.3, "cash_flow_y1": 500, "cash_on_cash": 0.04},
+                                       {"irr": 0.05, "dscr": 1.1, "cash_flow_y1": 100, "cash_on_cash": 0.02},
+                                       {"irr": -0.02, "dscr": 0.9, "cash_flow_y1": -200, "cash_on_cash": -0.01}]}},
+        ],
+    }
+    r = client.post("/api/portfolio/aggregate", json=body)
+    assert r.status_code == 200
+    out = r.json()
+    assert "resilience" in out
+    assert out["resilience"]["deals_mapped"] >= 1
+
+
+def test_chat_portfolio_resilience_tool(con):
+    """The chat tool should read from the module-level pipeline and score it."""
+    from reip import chat
+    chat._CURRENT_PIPELINE = [
+        {"label": "Pgh", "purchase_price": 150_000, "monthly_rent": 1500,
+         "state": "PA", "zip": "15213"},
+    ]
+    out = chat._execute("portfolio_resilience", {})
+    assert "resilience_score" in out
+    assert out["deals_mapped"] >= 1
+    # And with no pipeline set, returns helpful error
+    chat._CURRENT_PIPELINE = []
+    out2 = chat._execute("portfolio_resilience", {})
+    assert "error" in out2
+
+
 def test_portfolio_boom_bust_concentration_warning():
     """Portfolio dominated by FL+CA+NV should fire the Boom-Bust state warning."""
     from reip import portfolio, tax

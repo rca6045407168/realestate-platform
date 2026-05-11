@@ -377,9 +377,10 @@ def underwrite(req: UnderwriteRequest) -> UnderwriteResponse:
 def portfolio_aggregate(req: PortfolioRequest):
     """Roll up a user's deals into a portfolio view.
 
-    Pure aggregation — no DB. Frontend posts the deal list it has in
-    localStorage. Server computes totals, concentration buckets, post-tax
-    IRR, depreciation tax savings, and concentration warnings.
+    Frontend posts the deal list it has in localStorage. Server computes
+    totals, concentration buckets, post-tax IRR, depreciation tax savings,
+    concentration warnings, AND a historical-resilience score (what would
+    your composition have done 2007-2012?).
     """
     t = tax_mod.TaxAssumptions(
         tax_bracket=req.tax_bracket,
@@ -387,7 +388,13 @@ def portfolio_aggregate(req: PortfolioRequest):
         useful_life_years=req.useful_life_years,
         deduction_against_ordinary=req.deduction_against_ordinary,
     )
-    return _sanitize(portfolio_mod.aggregate(req.deals, tax=t))
+    out = portfolio_mod.aggregate(req.deals, tax=t)
+    # Layer in historical resilience (uses FHFA HPI per-CBSA stability panel).
+    try:
+        out["resilience"] = strategy_mod.portfolio_resilience(connect(), req.deals)
+    except Exception as e:
+        out["resilience"] = {"error": f"resilience compute failed: {e}"}
+    return _sanitize(out)
 
 
 @app.get("/api/strategy/backtest")

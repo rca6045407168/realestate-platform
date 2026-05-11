@@ -1120,6 +1120,54 @@ function renderPortfolio(p) {
       </ul>
     </div>` : '';
 
+  // Historical resilience card (from strategy.portfolio_resilience)
+  const res = p.resilience || {};
+  const resilienceCard = (res.resilience_score != null) ? (() => {
+    const s = res.resilience_score;
+    const color = s >= 80 ? 'text-green border-green'
+                : s >= 60 ? 'text-fg border-line'
+                : s >= 40 ? 'text-yellow border-yellow'
+                : 'text-red border-red';
+    const ddPct  = res.weighted_historical_max_dd_pct;
+    const recY   = res.weighted_recovery_years;
+    const bench  = res.benchmark || {};
+    const gap    = res.gap_vs_benchmark_dd_pct;
+    const dist   = res.tier_distribution_by_equity || {};
+    const distHtml = Object.entries(dist).map(([t, p]) => {
+      const tColor = t === 'Boring' ? 'bg-green' : t === 'Standard' ? 'bg-accent'
+                    : t === 'Volatile' ? 'bg-yellow' : t === 'Boom-Bust' ? 'bg-red' : 'bg-muted';
+      return `<div class="flex items-center gap-2 text-xs">
+        <div class="w-24 ${t === 'Unknown' ? 'text-muted' : ''}">${escapeHtml(t)}</div>
+        <div class="flex-1 h-2 bg-bg rounded overflow-hidden"><div class="h-full ${tColor}" style="width: ${p*100}%"></div></div>
+        <div class="tabular-nums w-12 text-right">${(p*100).toFixed(0)}%</div>
+      </div>`;
+    }).join('');
+    return `
+    <div class="bg-card rounded border ${color.split(' ')[1]} p-5">
+      <div class="flex items-start justify-between mb-3">
+        <div>
+          <div class="text-xs uppercase tracking-wide text-muted">Historical resilience</div>
+          <div class="text-3xl font-bold ${color.split(' ')[0]} mt-1">${s}<span class="text-base text-muted font-normal">/100</span></div>
+          <div class="text-xs text-muted mt-1">"if this composition existed in 2007"</div>
+        </div>
+        <div class="text-right">
+          <div class="text-xs uppercase tracking-wide text-muted">Equity-weighted max DD</div>
+          <div class="text-2xl font-bold text-red">${ddPct != null ? ddPct.toFixed(1)+'%' : '—'}</div>
+          <div class="text-xs text-muted mt-1">Recovery: ${recY != null ? recY.toFixed(1)+' yrs' : '—'}</div>
+        </div>
+      </div>
+      <div class="text-sm text-fg mb-3">${escapeHtml(res.interpretation || '')}</div>
+      <div class="text-xs uppercase tracking-wide text-muted mb-1">Equity by historical stability tier</div>
+      <div class="space-y-1">${distHtml}</div>
+      <div class="mt-3 pt-3 border-t border-line text-xs text-muted">
+        Benchmark: ${escapeHtml(bench.name || '?')} portfolio had ${bench.max_dd_pct != null ? bench.max_dd_pct + '%' : '—'} max DD,
+        ${bench.recovery_years || '—'} year recovery.
+        ${gap != null ? `Your gap: <span class="${gap > 0 ? 'text-green' : 'text-red'}">${gap > 0 ? '+' : ''}${gap}pp</span>` : ''}
+        ${res.deals_unmapped > 0 ? `· <span class="text-muted">${res.deals_unmapped} deal${res.deals_unmapped>1?'s':''} couldn't be mapped (no FHFA history)</span>` : ''}
+      </div>
+    </div>`;
+  })() : '';
+
   // Concentration bars (state / verdict / status)
   const bars = (rows, title, colorOf) => {
     if (!rows.length) return '';
@@ -1205,7 +1253,7 @@ function renderPortfolio(p) {
       Treat post-tax IRR as the optimistic ceiling.
     </div>`;
 
-  return [hero, warnings, concentrationGrid, dealTable, caveat].filter(Boolean).join('\n');
+  return [hero, resilienceCard, warnings, concentrationGrid, dealTable, caveat].filter(Boolean).join('\n');
 }
 
 // ---- Strategy backtest view --------------------------------------------

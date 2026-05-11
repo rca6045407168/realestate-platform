@@ -23,7 +23,7 @@ Requires ANTHROPIC_API_KEY in the environment.
 from __future__ import annotations
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 from .store import connect
 from . import (
     msa_score, zip_returns, listings_search, underwriting,
@@ -180,6 +180,19 @@ TOOLS = [
             "properties": {"text": {"type": "string"}},
             "required": ["text"],
         },
+    },
+    {
+        "name": "portfolio_resilience",
+        "description": (
+            "Compute the historical resilience score (0-100) of the user's CURRENT pipeline, "
+            "based on FHFA HPI 1985-now. Returns equity-weighted historical max drawdown, "
+            "recovery time, tier distribution (Boring/Standard/Volatile/Boom-Bust), and a "
+            "comparison vs the All-Weather benchmark. Use when the user asks 'how resilient "
+            "is my portfolio', 'what would my portfolio have done in 2008', or 'should I "
+            "diversify away from <state>'. Reads the pipeline_summary already in the system prompt — "
+            "you don't need to pass deals."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "strategy_backtest",
@@ -357,6 +370,34 @@ def _execute(name: str, args: dict) -> Any:
         ).df()
         return rows.to_dict("records")
 
+    if name == "portfolio_resilience":
+        # The chat orchestrator passes pipeline_summary as a parameter via
+        # closure. We pull it from the executor's pipeline list captured at
+        # call-time. Since `_execute` doesn't take a pipeline arg, we use
+        # a module-level placeholder that chat() sets before invoking tools.
+        global _CURRENT_PIPELINE
+        deals = _CURRENT_PIPELINE or []
+        if not deals:
+            return {"error": "No saved deals in pipeline; nothing to score."}
+        # The compact summary the client sends doesn't have the full inputs
+        # structure that portfolio_resilience() expects. Reshape it.
+        reshaped = [
+            {
+                "label": d.get("label"),
+                "inputs": {
+                    "purchase_price": d.get("purchase_price"),
+                    "monthly_rent": d.get("monthly_rent"),
+                    "ltv": 0.75,
+                    "rehab_cost": 0,
+                    "state": d.get("state"),
+                    "zip": d.get("zip"),
+                },
+            }
+            for d in deals
+        ]
+        from . import strategy as strat
+        return strat.portfolio_resilience(con, reshaped)
+
     if name == "strategy_backtest":
         from . import strategy as strat
         section = args["section"]
@@ -519,6 +560,13 @@ When the user asks "what's a good real estate strategy" or "where should I buy",
 # Chat orchestrator
 # ---------------------------------------------------------------------------
 
+# Set by chat() before tool execution. Read by the portfolio_resilience
+# tool. Module-level handoff because the tool input_schema is intentionally
+# empty (the LLM shouldn't have to re-pass the pipeline that's already in
+# the system prompt).
+_CURRENT_PIPELINE: Optional[list[dict]] = None
+
+
 def _format_pipeline_block(deals: list[dict]) -> str:
     """Render a client-supplied pipeline list into a system-prompt block.
 
@@ -603,6 +651,13 @@ def chat(user_message: str, history: list[dict] | None = None,
     context = _build_context()
     pipeline_block = _format_pipeline_block(pipeline_summary or [])
     system = SYSTEM_PROMPT + "\n\n" + context + ("\n" + pipeline_block if pipeline_block else "")
+
+    # Make the pipeline accessible to tool executors (specifically
+    # portfolio_resilience, which needs the deal list but the tool
+    # input_schema can't pass arbitrary nested data without bloating
+    # the prompt). Closure-style module-level handoff is fine here.
+    global _CURRENT_PIPELINE
+    _CURRENT_PIPELINE = pipeline_summary or []
 
     messages: list[dict] = []
     for h in (history or []):
