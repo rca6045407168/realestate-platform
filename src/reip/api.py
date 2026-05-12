@@ -430,6 +430,23 @@ def strategy_backtest_endpoint(section: Optional[str] = None):
     return out
 
 
+@app.get("/api/chat/budget")
+def chat_budget():
+    """Today's chat spend vs the daily cap. Defense against runaway use."""
+    from . import chat as chat_mod
+    spent = chat_mod._today_spend_usd()
+    cap = chat_mod._daily_budget_usd()
+    return {
+        "spent_today_usd":   round(spent, 4),
+        "cap_usd":           cap,
+        "remaining_usd":     round(max(0, cap - spent), 4) if cap > 0 else None,
+        "percent_used":      round(100 * spent / cap, 1) if cap > 0 else None,
+        "cap_enabled":       cap > 0,
+        "blocked":           cap > 0 and spent >= cap,
+        "tip":               "Set CHAT_DAILY_BUDGET_USD env (0 disables).",
+    }
+
+
 @app.get("/api/chat/usage")
 def chat_usage_summary(days: int = 7):
     """Read ~/.reip/chat_usage.jsonl and aggregate token + cost telemetry.

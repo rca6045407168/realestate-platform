@@ -643,6 +643,37 @@ def _format_pipeline_block(deals: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _today_spend_usd() -> float:
+    """Sum est_cost_usd from chat_usage.jsonl for today (UTC)."""
+    from pathlib import Path
+    import datetime
+    log = Path.home() / ".reip" / "chat_usage.jsonl"
+    if not log.exists():
+        return 0.0
+    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    total = 0.0
+    try:
+        for line in log.read_text().splitlines():
+            if today in line:
+                try:
+                    r = json.loads(line)
+                    total += float(r.get("est_cost_usd", 0) or 0)
+                except Exception:
+                    continue
+    except Exception:
+        return 0.0
+    return total
+
+
+def _daily_budget_usd() -> float:
+    """Read CHAT_DAILY_BUDGET_USD env var. Default $2/day — a hard cap that
+    blocks runaway. Override to 0 to disable the cap entirely."""
+    try:
+        return float(os.getenv("CHAT_DAILY_BUDGET_USD", "2.00"))
+    except (TypeError, ValueError):
+        return 2.00
+
+
 def _log_chat_usage(usage: dict, model: str, n_tool_calls: int) -> None:
     """Append one line per chat turn to ~/.reip/chat_usage.jsonl so we never
     get surprised by a bill again. Local-only; rolls forever (small).
@@ -689,6 +720,18 @@ def chat(user_message: str, history: list[dict] | None = None,
     """
     if anthropic is None:
         return {"error": "anthropic SDK not installed. `uv pip install anthropic`."}
+
+    # Daily budget cap — blocks runaway spend before any API call goes out.
+    # User can configure with CHAT_DAILY_BUDGET_USD env (0 disables).
+    budget = _daily_budget_usd()
+    if budget > 0:
+        spent = _today_spend_usd()
+        if spent >= budget:
+            return {"error": (
+                f"Daily chat budget hit: ${spent:.4f} spent today, cap ${budget:.2f}. "
+                f"Resets at UTC midnight. Override with CHAT_DAILY_BUDGET_USD env var "
+                f"(set to 0 to disable). Check /api/chat/budget for live status."
+            )}
     # Resolve credentials. Order: (1) ANTHROPIC_API_KEY env / .env,
     # (2) Claude Code OAuth bearer token stored in macOS keychain
     # (so a Claude Max subscriber doesn't need a separate API key).
