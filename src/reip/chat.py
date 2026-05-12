@@ -304,7 +304,15 @@ def _execute(name: str, args: dict) -> Any:
             limit=args.get("limit", 10),
             archetypes_by_cbsa=archetypes,
         )
-        return [zip_returns.to_dict(z) for z in rows]
+        # Token-cost trim: ZipReturn has ~25 fields; the model only needs
+        # the essential 8 to answer "best zips" / "where to buy" questions.
+        # Saves ~70% of returned JSON, ~$0.005/tool-call on multi-iter loops.
+        ESSENTIAL = ("zip", "state", "cbsa_name", "regime_label",
+                      "regime_adjusted_irr", "irr_5y",
+                      "typical_price", "typical_rent",
+                      "cap_rate_y1", "dscr_y1")
+        return [{k: getattr(z, k, None) for k in ESSENTIAL if getattr(z, k, None) is not None}
+                 for z in rows]
 
     if name == "top_msas":
         raw = msa_score.features(con)
@@ -317,9 +325,11 @@ def _execute(name: str, args: dict) -> Any:
                     "cashflow": "cashflow_score"}[args.get("sort_by", "total")]
         scored = scored[scored["pop"] >= args.get("min_pop", 250_000)]
         scored = scored.sort_values(sort_col, ascending=False).head(args.get("limit", 10))
-        keep = ["cbsa_code", "cbsa_name", "archetype", "pop", "pop_cagr_5yr", "emp_cagr_5yr",
-                "income_cagr_5yr", "net_migration_pct_pop", "gross_yield",
-                "appreciation_score", "cashflow_score", "total_return_score"]
+        # Trim from 12 to 7 essentials. The model rarely cites the 5 dropped
+        # fields (emp_cagr_5yr, income_cagr_5yr, net_migration_pct_pop,
+        # appreciation_score, cashflow_score) in chat answers.
+        keep = ["cbsa_code", "cbsa_name", "archetype", "pop",
+                "pop_cagr_5yr", "gross_yield", "total_return_score"]
         cols = [c for c in keep if c in scored.columns]
         return scored[cols].to_dict("records")
 
@@ -331,7 +341,13 @@ def _execute(name: str, args: dict) -> Any:
         m = scored[scored["cbsa_code"].astype(str) == str(args["cbsa_code"])]
         if m.empty:
             return {"error": f"No MSA {args['cbsa_code']}"}
-        return m.iloc[0].to_dict()
+        # msa_detail has ~40 fields; trim to the meaningful 12 for chat.
+        row = m.iloc[0].to_dict()
+        keep = ("cbsa_code", "cbsa_name", "archetype", "pop", "pop_cagr_5yr",
+                "emp_cagr_5yr", "income_cagr_5yr", "net_migration_pct_pop",
+                "gross_yield", "permits_per_1000_hh",
+                "appreciation_score", "cashflow_score", "total_return_score")
+        return {k: row.get(k) for k in keep if row.get(k) is not None}
 
     if name == "live_listings":
         # Reuse the same path the API uses
@@ -559,6 +575,12 @@ Recommendation gate is the moral center. GREEN requires DSCR ≥ 1.30×, refi ap
 - When you pull data, summarize what it means; don't dump JSON.
 - Short paragraphs and tight bullets. No long preambles.
 
+## Response length — calibrate to the question
+- Direct factual question ("what's today's rate", "what's my pipeline score") → 1-3 sentences. No headers, no padding.
+- Single-market analysis ("is Memphis good", "stress this deal") → ≤200 words, one table if needed, action line.
+- Comparative / strategic ("compare these 3 metros", "what's a good strategy") → full markdown, ≤400 words.
+- Never explain methodology unless asked. The investor knows what an IRR is.
+
 ## Tools
 
 You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
@@ -710,8 +732,14 @@ def chat(user_message: str, history: list[dict] | None = None,
             "macOS keychain under 'Claude Code-credentials')."
         )}
     context = _build_context()
+    # Cache-stability: only inject pipeline_block when it's non-empty.
+    # An empty append used to add nothing visible but changed the system
+    # string's identity, potentially fragmenting the cache key. Now the
+    # system prompt is identical across all empty-pipeline sessions.
     pipeline_block = _format_pipeline_block(pipeline_summary or [])
-    system = SYSTEM_PROMPT + "\n\n" + context + ("\n" + pipeline_block if pipeline_block else "")
+    system = SYSTEM_PROMPT + "\n\n" + context
+    if pipeline_block:
+        system = system + "\n" + pipeline_block
 
     # Make the pipeline accessible to tool executors (specifically
     # portfolio_resilience, which needs the deal list but the tool
