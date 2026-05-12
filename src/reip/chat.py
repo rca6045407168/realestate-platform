@@ -720,11 +720,31 @@ def chat(user_message: str, history: list[dict] | None = None,
     global _CURRENT_PIPELINE
     _CURRENT_PIPELINE = pipeline_summary or []
 
+    # Sliding window: cap conversation history at the last 20 messages
+    # (~10 user/assistant turns). Long sessions otherwise re-send unbounded
+    # history on every call. Beyond this, older turns are dropped — the
+    # pipeline_summary block in the system prompt already carries the
+    # user's saved-deal state, so context isn't lost about that.
+    HISTORY_WINDOW = 20
+    history = (history or [])[-HISTORY_WINDOW:]
+
     messages: list[dict] = []
-    for h in (history or []):
+    for h in history:
         # Coerce text content into the messages-API shape
         messages.append({"role": h["role"], "content": h["content"]})
-    messages.append({"role": "user", "content": user_message})
+    # User's NEW message. Wrap as a content block with cache_control so the
+    # entire prefix (system + tools + all prior turns + this message) is
+    # cached. Next turn's call hits 90%-off cache reads for everything
+    # up to here. Anthropic allows up to 4 cache breakpoints per request;
+    # we're using 2 (system, here) so we have headroom for tool-loop chains.
+    messages.append({
+        "role": "user",
+        "content": [{
+            "type": "text",
+            "text": user_message,
+            "cache_control": {"type": "ephemeral"},
+        }],
+    })
 
     # Model selection: try primary first, fall back to FALLBACK_MODEL on 429.
     # Claude Code Max plan shares its sonnet quota with the active Claude
@@ -759,7 +779,7 @@ def chat(user_message: str, history: list[dict] | None = None,
         try:
             resp = client.messages.create(
                 model=model,
-                max_tokens=2000,
+                max_tokens=1500,        # Lower ceiling = ~25% less output cost
                 system=cached_system,
                 tools=cached_tools,
                 messages=messages,
