@@ -621,8 +621,45 @@ def _format_pipeline_block(deals: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _log_chat_usage(usage: dict, model: str, n_tool_calls: int) -> None:
+    """Append one line per chat turn to ~/.reip/chat_usage.jsonl so we never
+    get surprised by a bill again. Local-only; rolls forever (small).
+
+    Skips when total token usage is zero — that's a test stub or a 401
+    that returned before billing happened, no signal there."""
+    if sum(usage.get(k, 0) or 0 for k in
+            ("input_tokens", "output_tokens",
+             "cache_creation_input_tokens", "cache_read_input_tokens")) == 0:
+        return
+    try:
+        from pathlib import Path
+        import datetime
+        # Rough cost estimate (Sonnet 4.5 list pricing: $3/M in, $15/M out,
+        # cache-write $3.75/M, cache-read $0.30/M). Adjust if the model
+        # ever changes.
+        cost = (
+            usage.get("input_tokens", 0)              * 3.00 / 1_000_000 +
+            usage.get("output_tokens", 0)             * 15.00 / 1_000_000 +
+            usage.get("cache_creation_input_tokens", 0) * 3.75 / 1_000_000 +
+            usage.get("cache_read_input_tokens", 0)   * 0.30 / 1_000_000
+        )
+        log_dir = Path.home() / ".reip"
+        log_dir.mkdir(exist_ok=True)
+        line = {
+            "ts": datetime.datetime.utcnow().isoformat() + "Z",
+            "model": model,
+            "tool_calls": n_tool_calls,
+            **usage,
+            "est_cost_usd": round(cost, 6),
+        }
+        with open(log_dir / "chat_usage.jsonl", "a") as f:
+            f.write(json.dumps(line) + "\n")
+    except Exception:
+        pass
+
+
 def chat(user_message: str, history: list[dict] | None = None,
-         max_tool_iters: int = 5,
+         max_tool_iters: int = 3,
          pipeline_summary: list[dict] | None = None) -> dict:
     """Run one chat turn. Returns {reply, tool_calls, error}.
 
@@ -696,13 +733,35 @@ def chat(user_message: str, history: list[dict] | None = None,
     model = MODEL
     tool_calls = []
     fallback_used = False
+
+    # Anthropic prompt caching: mark system + tools as ephemeral-cached so
+    # the same ~6K tokens of static overhead bills 1× per 5-min window
+    # instead of every call (and every tool-loop iteration). 90% discount
+    # on cache reads. The user message + conversation history naturally
+    # vary so they're not cached.
+    cached_system = [{
+        "type": "text",
+        "text": system,
+        "cache_control": {"type": "ephemeral"},
+    }]
+    # Mark the LAST tool with cache_control; per Anthropic's contract this
+    # caches all tools (and the system+tools prefix up to that point).
+    cached_tools = [dict(t) for t in TOOLS]
+    if cached_tools:
+        cached_tools[-1] = {**cached_tools[-1], "cache_control": {"type": "ephemeral"}}
+
+    # Track cumulative usage across iterations for telemetry.
+    usage_totals = {"input_tokens": 0, "output_tokens": 0,
+                     "cache_creation_input_tokens": 0,
+                     "cache_read_input_tokens": 0}
+
     for _ in range(max_tool_iters):
         try:
             resp = client.messages.create(
                 model=model,
                 max_tokens=2000,
-                system=system,
-                tools=TOOLS,
+                system=cached_system,
+                tools=cached_tools,
                 messages=messages,
             )
         except anthropic.AuthenticationError as e:
@@ -728,10 +787,19 @@ def chat(user_message: str, history: list[dict] | None = None,
             )}
         except anthropic.APIError as e:
             return {"error": f"Anthropic API error: {type(e).__name__}: {e}"}
+
+        # Accumulate usage from this iteration
+        if getattr(resp, "usage", None):
+            u = resp.usage
+            for k in usage_totals:
+                usage_totals[k] += getattr(u, k, 0) or 0
+
         if resp.stop_reason != "tool_use":
             # Final text answer
             text_parts = [b.text for b in resp.content if b.type == "text"]
-            return {"reply": "".join(text_parts), "tool_calls": tool_calls}
+            _log_chat_usage(usage_totals, model, len(tool_calls))
+            return {"reply": "".join(text_parts), "tool_calls": tool_calls,
+                    "usage": usage_totals}
 
         # Execute tool_use blocks
         assistant_blocks = []
@@ -747,10 +815,14 @@ def chat(user_message: str, history: list[dict] | None = None,
                 except Exception as e:
                     out = {"error": f"{type(e).__name__}: {e}"}
                     tool_calls.append({"name": b.name, "input": b.input, "ok": False, "error": str(e)})
-                # Truncate large outputs to keep tokens manageable
+                # Truncate large outputs aggressively. Big tool results
+                # (top_zips=100, strategy_backtest full report, etc.) used
+                # to thread back through every tool-loop iteration and
+                # multiply cost. 4KB cap = ~1K tokens, plenty for the
+                # model to summarize from.
                 serialized = json.dumps(out, default=str)
-                if len(serialized) > 8000:
-                    serialized = serialized[:8000] + "...[truncated]"
+                if len(serialized) > 4000:
+                    serialized = serialized[:4000] + "...[truncated for cost]"
                 tool_results.append({"type": "tool_result", "tool_use_id": b.id, "content": serialized})
 
         messages.append({"role": "assistant", "content": assistant_blocks})

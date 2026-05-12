@@ -430,6 +430,63 @@ def strategy_backtest_endpoint(section: Optional[str] = None):
     return out
 
 
+@app.get("/api/chat/usage")
+def chat_usage_summary(days: int = 7):
+    """Read ~/.reip/chat_usage.jsonl and aggregate token + cost telemetry.
+
+    Surfaces total cost over the last N days, per-model breakdown, and the
+    last 20 individual calls. No more $590 surprises — open this any time.
+    """
+    from pathlib import Path
+    import datetime, json as _json
+    log = Path.home() / ".reip" / "chat_usage.jsonl"
+    if not log.exists():
+        return {"total_cost_usd": 0, "calls": 0, "days": days, "rows": [],
+                "note": "No chat_usage.jsonl yet; run a chat to populate."}
+    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(days=days)).isoformat()
+    rows: list[dict] = []
+    for line in log.read_text().splitlines():
+        try:
+            r = _json.loads(line)
+        except Exception:
+            continue
+        if r.get("ts", "") >= cutoff:
+            rows.append(r)
+    by_model: dict[str, dict] = {}
+    total_cost = 0.0
+    total_in = total_out = total_cache_r = total_cache_w = 0
+    for r in rows:
+        m = r.get("model", "?")
+        b = by_model.setdefault(m, {"calls": 0, "cost": 0.0,
+                                      "input_tokens": 0, "output_tokens": 0,
+                                      "cache_read_input_tokens": 0,
+                                      "cache_creation_input_tokens": 0})
+        b["calls"] += 1
+        b["cost"] += r.get("est_cost_usd", 0) or 0
+        for k in ("input_tokens", "output_tokens",
+                  "cache_read_input_tokens", "cache_creation_input_tokens"):
+            b[k] += r.get(k, 0) or 0
+        total_cost += r.get("est_cost_usd", 0) or 0
+        total_in += r.get("input_tokens", 0) or 0
+        total_out += r.get("output_tokens", 0) or 0
+        total_cache_r += r.get("cache_read_input_tokens", 0) or 0
+        total_cache_w += r.get("cache_creation_input_tokens", 0) or 0
+    return {
+        "days":  days,
+        "calls": len(rows),
+        "totals": {
+            "est_cost_usd":              round(total_cost, 4),
+            "input_tokens":              total_in,
+            "output_tokens":             total_out,
+            "cache_read_input_tokens":   total_cache_r,
+            "cache_creation_input_tokens": total_cache_w,
+            "cache_hit_pct":             round(100 * total_cache_r / max(1, total_in + total_cache_r + total_cache_w), 1),
+        },
+        "by_model": by_model,
+        "recent":   rows[-20:],
+    }
+
+
 @app.get("/api/macro")
 def macro_rates():
     """Current macro rates the platform uses for rate-context (today's 30Y
