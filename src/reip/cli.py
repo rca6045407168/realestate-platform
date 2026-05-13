@@ -468,6 +468,29 @@ def digest(out, dry_run):
 
 
 @cli.command()
+def mcp():
+    """Start the reip MCP server on stdio.
+
+    Exposes every chat tool (top_zips, top_msas, msa_detail, live_listings,
+    underwrite, avm_zips, parse_remarks, buy_box, stress_test,
+    strategy_backtest, portfolio_resilience, current_rates) over the
+    Model Context Protocol. Wire into Claude Code / Cursor / Continue
+    via their mcp.json. No LLM is invoked here — pure analytical
+    dispatch, $0 API cost.
+
+    Setup (Claude Code):
+      Add to ~/.claude.json:
+        {"mcpServers": {"reip": {"command": "<absolute-path>/reip", "args": ["mcp"]}}}
+
+    Then in any Claude Code session: ask "use reip to stress test a
+    $80k MO deal with $1700/mo rent" — the call goes to this server
+    instead of the /api/chat endpoint, billing zero Anthropic credit.
+    """
+    from . import mcp_server
+    mcp_server.run_stdio()
+
+
+@cli.command()
 def macro():
     """Show current macro rates from the local fred_macro table."""
     con = connect()
