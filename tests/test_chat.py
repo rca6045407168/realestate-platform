@@ -165,8 +165,87 @@ def test_every_tool_executes():
         ("avm_zips",      {"direction": "cold", "limit": 2}),
         ("parse_remarks", {"text": "trustees sale, REO, motivated seller"}),
         ("current_rates", {}),
+        ("recent_decisions", {"limit": 5}),
     ]
     for name, args in cases:
         out = chat._execute(name, args)
         # Must JSON-serialize cleanly
         json.dumps(out, default=str)
+
+
+# ---- Decision ledger (fast-weight context) -------------------------------
+
+def test_record_decision_appends_and_recent_reads(tmp_path, monkeypatch):
+    """record_decision → recent_decisions round-trip. Uses a temp ledger
+    so the test doesn't touch Richard's real ~/.reip/decisions.jsonl."""
+    from reip import decision_ledger
+    tmp_log = tmp_path / "decisions.jsonl"
+    monkeypatch.setattr(decision_ledger, "_path", lambda: tmp_log)
+
+    # Empty ledger → empty list, empty context block
+    assert decision_ledger.recent() == []
+    assert decision_ledger.render_context_block() == ""
+
+    # Record a verdict via the chat tool dispatcher
+    out = chat._execute("record_decision", {
+        "zip": "38116",
+        "verdict": "PASS",
+        "reason": "Wolf River 100y flood plain — climate overlay missed it.",
+        "state": "TN",
+        "price": 85000,
+        "verdict_gate": "GREEN",
+    })
+    assert "error" not in out
+    assert out["zip"] == "38116"
+    assert out["verdict"] == "PASS"
+    assert out["state"] == "TN"
+    assert out["price"] == 85000
+
+    # Read back via the chat tool dispatcher
+    rows = chat._execute("recent_decisions", {"limit": 5})
+    assert isinstance(rows, list)
+    assert len(rows) == 1
+    assert rows[0]["zip"] == "38116"
+    assert rows[0]["verdict"] == "PASS"
+
+    # The context-block renderer surfaces it for the system prompt
+    block = decision_ledger.render_context_block(limit=5)
+    assert "38116" in block
+    assert "PASS" in block
+    assert "Wolf River" in block
+
+
+def test_record_decision_rejects_bad_verdict(tmp_path, monkeypatch):
+    from reip import decision_ledger
+    monkeypatch.setattr(decision_ledger, "_path", lambda: tmp_path / "d.jsonl")
+    out = chat._execute("record_decision", {
+        "zip": "12345", "verdict": "MAYBE", "reason": "idk",
+    })
+    assert "error" in out
+    assert "BUY" in out["error"]  # enumerates valid options
+
+
+def test_record_decision_requires_reason(tmp_path, monkeypatch):
+    from reip import decision_ledger
+    monkeypatch.setattr(decision_ledger, "_path", lambda: tmp_path / "d.jsonl")
+    out = chat._execute("record_decision", {
+        "zip": "12345", "verdict": "BUY", "reason": "",
+    })
+    assert "error" in out
+
+
+def test_recent_decisions_clamps_limit(tmp_path, monkeypatch):
+    """limit must be coerced to 1-50 so a bad LLM arg can't blow context."""
+    from reip import decision_ledger
+    log = tmp_path / "d.jsonl"
+    monkeypatch.setattr(decision_ledger, "_path", lambda: log)
+    # Write 60 records
+    for i in range(60):
+        decision_ledger.append(zip_code=f"{10000+i:05d}", verdict="WATCH",
+                               reason=f"test record {i}")
+    # Tool requests 999 → must be clamped to 50
+    rows = chat._execute("recent_decisions", {"limit": 999})
+    assert len(rows) <= 50
+    # Tool requests garbage → falls back to default 10
+    rows = chat._execute("recent_decisions", {"limit": "bogus"})
+    assert len(rows) == 10

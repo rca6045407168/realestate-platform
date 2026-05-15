@@ -248,6 +248,50 @@ TOOLS = [
         },
     },
     {
+        "name": "record_decision",
+        "description": (
+            "Record Richard's verdict on a specific zip / deal so future chat sessions see it "
+            "as fast-weight context. Use when Richard says 'I'd buy this', 'I'd pass on this', "
+            "'this looks interesting, watching', or otherwise reveals a preference about a zip "
+            "or listing. `verdict` must be BUY / PASS / WATCH. `reason` is 1-2 sentences in "
+            "Richard's voice — the rationale that future sessions will read. Optional `action`, "
+            "`price`, `state`, `msa`, `verdict_gate` (GREEN/YELLOW/RED from stress_test) for "
+            "context. Do NOT invent decisions — only call this when the user has actually "
+            "expressed a verdict."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "zip":          {"type": "string", "description": "5-digit US zip code"},
+                "verdict":      {"type": "string", "enum": ["BUY", "PASS", "WATCH"]},
+                "reason":       {"type": "string", "description": "1-2 sentences explaining the call"},
+                "action":       {"type": "string", "description": "Optional concrete next step (e.g. 'pull comps', 'offer at $80k')"},
+                "price":        {"type": "number", "description": "Optional purchase price the verdict was on"},
+                "state":        {"type": "string", "description": "Optional 2-letter state code"},
+                "msa":          {"type": "string", "description": "Optional CBSA code or name"},
+                "verdict_gate": {"type": "string", "enum": ["GREEN", "YELLOW", "RED"], "description": "Optional gate verdict from stress_test"},
+            },
+            "required": ["zip", "verdict", "reason"],
+        },
+    },
+    {
+        "name": "recent_decisions",
+        "description": (
+            "Read back Richard's most recent recorded verdicts (BUY/PASS/WATCH). Use when he "
+            "asks 'what have I been looking at', 'what zips am I tracking', 'what did I pass on', "
+            "or before recommending something to avoid re-pitching a deal he already passed on. "
+            "Returns at most `limit` records, newest first. The same data is also auto-loaded "
+            "into the system prompt at chat init, so you usually don't need to call this — "
+            "only call it explicitly when the user asks about decision history."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10, "description": "Max records to return (1-50)"},
+            },
+        },
+    },
+    {
         "name": "stress_test",
         "description": (
             "Multi-scenario underwriter. Runs base / stress / worst-case on a deal "
@@ -483,6 +527,30 @@ def _execute(name: str, args: dict) -> Any:
             out["climate"] = climate_dict
         return out
 
+    if name == "record_decision":
+        from . import decision_ledger
+        return decision_ledger.append(
+            zip_code=args.get("zip", ""),
+            verdict=args.get("verdict", ""),
+            reason=args.get("reason", ""),
+            action=args.get("action"),
+            extra={
+                "price": args.get("price"),
+                "state": args.get("state"),
+                "msa": args.get("msa"),
+                "verdict_gate": args.get("verdict_gate"),
+            },
+        )
+
+    if name == "recent_decisions":
+        from . import decision_ledger
+        n = args.get("limit", 10)
+        try:
+            n = max(1, min(int(n), 50))
+        except (TypeError, ValueError):
+            n = 10
+        return decision_ledger.recent(n)
+
     if name == "parse_remarks":
         s = remarks_mod.parse(args["text"])
         return {
@@ -545,6 +613,18 @@ def _build_context() -> str:
     except Exception as e:
         parts.append(f"\n## Context preload partial — {type(e).__name__}: {e}")
 
+    # Fast-weight context: Richard's recent BUY/PASS/WATCH verdicts.
+    # Read at chat init so it sits inside the cached system prefix —
+    # cheap on cache reads, refreshes session-to-session. Empty for new
+    # users keeps the prompt identical (stable cache key).
+    try:
+        from . import decision_ledger
+        decisions_block = decision_ledger.render_context_block(limit=10)
+        if decisions_block:
+            parts.append(decisions_block)
+    except Exception as e:
+        parts.append(f"\n## Decision ledger unavailable — {type(e).__name__}: {e}")
+
     return "\n".join(parts)
 
 
@@ -583,7 +663,9 @@ Recommendation gate is the moral center. GREEN requires DSCR ≥ 1.30×, refi ap
 
 ## Tools
 
-You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest, record_decision, recent_decisions. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+
+When Richard expresses a verdict on a zip or deal — "I'd buy this", "pass", "watching this one" — call `record_decision` with the zip, verdict (BUY/PASS/WATCH), and his rationale in 1-2 sentences. These verdicts become fast-weight context next session. Don't fabricate verdicts; only record when he's actually expressed one.
 
 Use `strategy_backtest` when the user asks for empirical historical evidence — e.g. "what's the worst drawdown ever in X market", "show me the regime decomposition", "is momentum real in real estate", "how did Sun Belt compare to CA Coastal over 30 years". Pick the right section.
 
