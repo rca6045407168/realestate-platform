@@ -167,6 +167,10 @@ def test_every_tool_executes():
         ("current_rates", {}),
         ("recent_decisions", {"limit": 5}),
         ("vault_search",  {"query": "framework", "limit": 2}),
+        ("brrrr_walkthrough", {
+            "purchase_price": 115000, "rehab_cost": 42000, "arv": 215000,
+            "monthly_rent": 1750, "annual_opex": 7200, "holding_cost": 4000,
+        }),
     ]
     for name, args in cases:
         out = chat._execute(name, args)

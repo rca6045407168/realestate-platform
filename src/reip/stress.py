@@ -205,47 +205,116 @@ def _scenario(name: str, label: str, a: uw.Assumptions,
 
 # --- gate logic -------------------------------------------------------------
 
+# Build-spec §4 — structured failure modes + required mitigations to
+# upgrade RED → YELLOW. Verbatim from PLATFORM_BUILD_SPEC.md.
+REQUIRED_MITIGATIONS_BY_FAILURE: dict[str, list[str]] = {
+    "thin_dscr": [
+        "verified_70pct_ltv_term_sheet",
+        "documented_capital_reserve_min_25k",
+    ],
+    "rehab_overrun_risk": [
+        "signed_contractor_bid",
+    ],
+    "financing_risk": [
+        "committed_hard_money_primary",
+        "committed_hard_money_backup",
+    ],
+    "exit_risk": [
+        "ltr_fallback_pm_identified",
+    ],
+}
+
+
 @dataclass
 class GateResult:
     verdict: str            # GREEN / YELLOW / RED
     reasons: list[str]
     mitigations: list[str]
+    failure_codes: list[str]  # structured codes — keys into REQUIRED_MITIGATIONS_BY_FAILURE
+    via_mitigations: bool = False  # set True when an upgrade was driven by verified mitigations
 
 
 def _evaluate_gate(scenarios: list[dict]) -> GateResult:
-    """Apply gate thresholds across base/stress/worst scenarios."""
+    """Apply gate thresholds across base/stress/worst scenarios.
+
+    Emits both human-readable reasons (for chat surfacing) and structured
+    failure_codes (for mitigations-upgrade matching per build spec §4).
+    """
     by_name = {s["name"]: s for s in scenarios}
     base, stress, worst = by_name["base"], by_name["stress"], by_name["worst"]
 
     fails_green = []
     fails_yellow = []
+    codes: set[str] = set()
 
     if worst["irr"] is None or worst["irr"] < -0.05:
         fails_green.append(f"worst-case IRR {(_pct(worst['irr']))} below -5% (you want survivable in recession)")
+        codes.add("exit_risk")
     if base["cash_on_cash"] is None or base["cash_on_cash"] < 0.06:
         fails_green.append(f"base CoC {(_pct(base['cash_on_cash']))} below 6%")
+        codes.add("thin_dscr")  # cashflow drag is addressable by lower-LTV term sheet + reserve
     if base["dscr"] is None or base["dscr"] < 1.25:
         fails_green.append(f"base DSCR {base['dscr']} below 1.25 (institutional underwriting threshold)")
+        codes.add("thin_dscr")
     if stress["dscr"] is None or stress["dscr"] < 1.10:
         fails_green.append(f"stress DSCR {stress['dscr']} below 1.10 (rate shock breaks debt service)")
+        codes.add("thin_dscr")
+        codes.add("financing_risk")  # rate shock blowing through debt service implies financing fragility
 
     if worst["irr"] is None or worst["irr"] < -0.15:
         fails_yellow.append(f"worst-case IRR {_pct(worst['irr'])} below -15% (deal could get wiped in a recession)")
+        codes.add("exit_risk")
+        # Catastrophic worst case implies the rehab/refi structure needs to be hard-bid too
+        codes.add("rehab_overrun_risk")
     if base["cash_on_cash"] is None or base["cash_on_cash"] < 0.03:
         fails_yellow.append(f"base CoC {_pct(base['cash_on_cash'])} below 3%")
+        codes.add("thin_dscr")
     if base["dscr"] is None or base["dscr"] < 1.15:
         fails_yellow.append(f"base DSCR {base['dscr']} below 1.15")
+        codes.add("thin_dscr")
 
+    codes_list = sorted(codes)
     if not fails_green:
         return GateResult("GREEN",
                           reasons=["Survives worst-case with non-negative IRR.",
                                    "Base CoC and DSCR clear lender + investor thresholds."],
-                          mitigations=[])
+                          mitigations=[],
+                          failure_codes=[])
     if not fails_yellow:
         return GateResult("YELLOW", reasons=fails_green,
-                          mitigations=_suggest_mitigations(base, stress, worst))
+                          mitigations=_suggest_mitigations(base, stress, worst),
+                          failure_codes=codes_list)
     return GateResult("RED", reasons=fails_yellow,
-                      mitigations=_suggest_mitigations(base, stress, worst))
+                      mitigations=_suggest_mitigations(base, stress, worst),
+                      failure_codes=codes_list)
+
+
+def _try_mitigations_upgrade(gate: GateResult, verified: set[str] | None) -> GateResult:
+    """Build spec §4: if every emitted failure_code has all its required
+    mitigations in `verified`, upgrade RED → YELLOW. The upgrade is
+    explicitly flagged via_mitigations=True so the chat surface can
+    distinguish it from an organic YELLOW.
+
+    Conservative semantics: ONLY upgrades RED → YELLOW. YELLOW → GREEN
+    is NOT a mitigations operation — that's a real-economics change
+    (lower price, higher rent, longer hold) and lives in price_to_green.
+    """
+    if gate.verdict != "RED" or not verified:
+        return gate
+    for code in gate.failure_codes:
+        required = REQUIRED_MITIGATIONS_BY_FAILURE.get(code, [])
+        if any(m not in verified for m in required):
+            return gate  # at least one required mitigation missing → no upgrade
+    # All emitted failure codes are fully mitigated → upgrade
+    return GateResult(
+        verdict="YELLOW",
+        reasons=gate.reasons + [
+            f"Upgraded RED → YELLOW via verified mitigations: {sorted(verified)}"
+        ],
+        mitigations=gate.mitigations,
+        failure_codes=gate.failure_codes,
+        via_mitigations=True,
+    )
 
 
 def _pct(x):
@@ -330,7 +399,8 @@ def _run_all(a: uw.Assumptions, state: Optional[str],
 def stress_test(a: uw.Assumptions, state: Optional[str] = None,
                 include_price_to_green: bool = True,
                 climate_score: Optional[dict] = None,
-                include_rate_curve: bool = True) -> dict:
+                include_rate_curve: bool = True,
+                verified_mitigations: Optional[list[str]] = None) -> dict:
     """Top-level: run all 3 scenarios + gate + price-to-green search.
 
     If `climate_score` is provided (a dict from climate.ClimateScore.to_dict()),
@@ -340,10 +410,20 @@ def stress_test(a: uw.Assumptions, state: Optional[str] = None,
     `include_rate_curve` adds a rate-sensitivity series — IRR / CoC / DSCR /
     verdict at rates from 5.5% to 9.0%, holding everything else constant.
     Lets investors see exactly where the deal flips GREEN→YELLOW→RED.
+
+    `verified_mitigations` is a list of structural mitigation IDs the
+    operator has verified (e.g. `verified_70pct_ltv_term_sheet`,
+    `documented_capital_reserve_min_25k`, `signed_contractor_bid`,
+    `committed_hard_money_primary`, `committed_hard_money_backup`,
+    `ltr_fallback_pm_identified`). Per build spec §4, when every failure
+    code emitted by the gate has all its required mitigations verified,
+    RED upgrades to YELLOW. The upgraded gate is flagged via_mitigations.
     """
     extra = _climate_stress_bumps(climate_score)
     scenarios = _run_all(a, state, extra_stress=extra)
     gate = _evaluate_gate(scenarios)
+    if verified_mitigations:
+        gate = _try_mitigations_upgrade(gate, set(verified_mitigations))
     out = {
         "state": (state or "").upper() or None,
         "state_overlay_applied": (state or "").upper() in _STATE_OVERLAYS,
@@ -352,8 +432,13 @@ def stress_test(a: uw.Assumptions, state: Optional[str] = None,
         "climate_overlay_summary": _climate_overlay_summary(climate_score, extra),
         "assumptions": a.__dict__,
         "scenarios": scenarios,
-        "gate": {"verdict": gate.verdict, "reasons": gate.reasons,
-                  "mitigations": gate.mitigations},
+        "gate": {
+            "verdict": gate.verdict,
+            "reasons": gate.reasons,
+            "mitigations": gate.mitigations,
+            "failure_codes": gate.failure_codes,
+            "via_mitigations": gate.via_mitigations,
+        },
     }
     if include_price_to_green and gate.verdict != "GREEN":
         out["price_to_green"] = _price_to_green(a, state, extra_stress=extra)

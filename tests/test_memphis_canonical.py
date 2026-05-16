@@ -131,23 +131,99 @@ def test_memphis_fixture_has_all_five_mitigation_groups(memphis: dict):
 
 
 # ---------------------------------------------------------------------------
-# Documented gaps — these tests skip until the BRRRR + mitigations work
-# lands. They're here as executable open-threads, not assertions.
+# Activated 2026-05-16 — Phase 3 work landed (brrrr.py + mitigations gate).
+# These were @pytest.mark.skip until the BRRRR module + mitigations
+# parameter shipped. Now they pin the v5 §9.2 base-case numbers and the
+# §9.4 RED→YELLOW upgrade.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skip(reason=(
-    "BRRRR refi mechanics not yet wired. Add packages/underwriting/brrrr.py "
-    "per build spec Phase 3; this test then pins $7,250 residual / 13% CoC "
-    "within $50."
-))
 def test_memphis_brrrr_base_case_matches_long_paper_table_9(memphis: dict):
-    pass
+    """v5 §9.2 Table 9 walkthrough. Acceptance per build spec §3 Phase 3:
+    'Memphis fixture matches long paper Table 9 base-case numbers within $50.'"""
+    from reip.brrrr import BRRRRInputs, compute_brrrr
+    deal = memphis["deal"]
+    i = BRRRRInputs(
+        purchase_price=deal["purchase_price"],
+        rehab_cost=deal["rehab_cost"],
+        arv=deal["arv"],
+        monthly_rent=deal["monthly_rent"],
+        annual_opex=deal["annual_opex"],
+        holding_cost=deal["holding_cost"],
+        closing_cost_pct=deal["closing_cost_pct"],
+        refi_closing_cost=deal["refi_closing_costs"],
+        refi_ltv=deal["refi_ltv"],
+        refi_rate=deal["refi_rate"],
+        refi_term_years=deal["refi_term_years"],
+    )
+    out = compute_brrrr(i)
+    # All checks within $50 (build-spec acceptance tolerance).
+    assert abs(out.total_invested_before_refi - deal["total_invested_before_refi"]) <= 50, (
+        f"total_invested_before_refi {out.total_invested_before_refi} "
+        f"missed Table 9 ${deal['total_invested_before_refi']} by >$50"
+    )
+    assert abs(out.stabilized_noi - deal["stabilized_noi"]) <= 50
+    assert abs(out.refi_proceeds_net - deal["refi_proceeds_net"]) <= 50
+    assert abs(out.residual_capital - deal["residual_capital"]) <= 50
+    assert abs(out.annual_cashflow_after_debt_service - deal["annual_cashflow_after_debt_service"]) <= 50
+    # DSCR & CoC are unitless — pin to 2 decimal places.
+    assert abs(out.stabilized_dscr - deal["stabilized_dscr"]) <= 0.01, (
+        f"stabilized DSCR {out.stabilized_dscr:.3f} missed v5's 1.07x"
+    )
+    assert out.cash_on_cash_on_residual is not None
+    assert abs(out.cash_on_cash_on_residual - deal["cash_on_cash_on_residual"]) <= 0.01
 
 
-@pytest.mark.skip(reason=(
-    "Mitigations parameter not yet on reip's gate. Add `mitigations=` to "
-    "stress_test signature per build spec §4 REQUIRED_MITIGATIONS_BY_FAILURE; "
-    "this test then pins RED → YELLOW upgrade with all five verified."
-))
 def test_memphis_upgrades_to_yellow_with_all_mitigations_verified(memphis: dict):
-    pass
+    """v5 §9.4: 'Only when all five mitigations are verified does the RED
+    screen upgrade to YELLOW.' Pin that contract.
+
+    Five mitigations enumerated in the fixture. Pass all of them in →
+    expect YELLOW with via_mitigations=True. Pass a subset → still RED.
+    """
+    inputs = memphis["stress_test_inputs"]
+    a = uw.Assumptions(
+        purchase_price=inputs["purchase_price"],
+        rehab_cost=inputs["rehab_cost"],
+        arv=inputs["arv"],
+        monthly_rent=inputs["monthly_rent"],
+        mortgage_rate=inputs["mortgage_rate"],
+        ltv=inputs["ltv"],
+        vacancy=inputs["vacancy"],
+        property_tax_rate=inputs["property_tax_rate"],
+        insurance_annual=inputs["insurance_annual"],
+        hoa_monthly=inputs["hoa_monthly"],
+    )
+    all_mits = [m["id"] for m in memphis["mitigations"]]
+    assert len(all_mits) == 6, "fixture should enumerate 6 mitigation IDs"
+
+    # All verified → RED upgrades to YELLOW
+    out = stress.stress_test(a, state=inputs["state"], verified_mitigations=all_mits)
+    assert out["gate"]["verdict"] == "YELLOW", (
+        f"With all mitigations verified, Memphis should upgrade RED→YELLOW; "
+        f"got {out['gate']['verdict']}. Reasons: {out['gate']['reasons']}"
+    )
+    assert out["gate"]["via_mitigations"] is True
+    assert memphis["expected"]["with_all_mitigations_verdict"] == "YELLOW"
+
+    # Subset (missing the LTR fallback PM) → still RED. exit_risk failure
+    # code is in the gate output but its mitigation is unverified, so
+    # upgrade is denied.
+    partial = [m for m in all_mits if m != "ltr_fallback_pm_identified"]
+    out_partial = stress.stress_test(a, state=inputs["state"], verified_mitigations=partial)
+    assert out_partial["gate"]["verdict"] == "RED", (
+        f"With LTR-fallback missing, Memphis should stay RED; "
+        f"got {out_partial['gate']['verdict']}. "
+        f"Failure codes were: {out_partial['gate']['failure_codes']}"
+    )
+    assert out_partial["gate"]["via_mitigations"] is False
+
+
+def test_memphis_brrrr_fixture_sensitivity_scenarios_present(memphis: dict):
+    """v5 §9.3 Table 10. Pin that the fixture carries all six sensitivity
+    scenarios (base + 5 stresses) so a later module can run them through
+    a sensitivity engine without re-deriving the inputs."""
+    names = {s["name"] for s in memphis["sensitivity"]}
+    assert names == {
+        "base", "rehab_over_20pct", "arv_miss_5pct",
+        "rehab_arv_combined", "catastrophic", "bull_arv_up_5pct",
+    }

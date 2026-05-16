@@ -321,7 +321,12 @@ TOOLS = [
             "CoC, DSCR, break-even occupancy + a GREEN/YELLOW/RED gate with concrete "
             "mitigations + `price_to_green` (the price ceiling that lifts the deal to "
             "GREEN). Use whenever the user asks 'is this deal good', 'underwrite this', "
-            "'what could go wrong', or pastes a listing with numbers."
+            "'what could go wrong', or pastes a listing with numbers. "
+            "OPTIONAL: pass `verified_mitigations` (list of mitigation IDs from "
+            "REQUIRED_MITIGATIONS_BY_FAILURE — see build spec §4) when the operator "
+            "has structurally addressed RED-level failures. When every emitted failure "
+            "code has all required mitigations verified, RED upgrades to YELLOW "
+            "(per v5 framework §9.4)."
         ),
         "input_schema": {
             "type": "object",
@@ -338,8 +343,55 @@ TOOLS = [
                 "hoa_monthly":        {"type": "number", "default": 0},
                 "state":              {"type": "string", "description": "2-letter state code — drives state overlay (FL/TX/CA/OH/MI/...)"},
                 "zip":                {"type": "string", "description": "5-digit ZIP — enables climate amplification (FEMA NFIP-driven)"},
+                "verified_mitigations": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "verified_70pct_ltv_term_sheet",
+                            "documented_capital_reserve_min_25k",
+                            "signed_contractor_bid",
+                            "committed_hard_money_primary",
+                            "committed_hard_money_backup",
+                            "ltr_fallback_pm_identified",
+                        ],
+                    },
+                    "description": "Mitigation IDs the operator has verified. Provide only when the user has explicitly stated they have a term sheet / signed bid / reserve documented / etc. — don't infer.",
+                },
             },
             "required": ["purchase_price", "monthly_rent"],
+        },
+    },
+    {
+        "name": "brrrr_walkthrough",
+        "description": (
+            "Run the v5 §9.2 BRRRR (Buy-Rehab-Rent-Refinance-Repeat) walkthrough "
+            "on a deal. Returns acquisition + rehab + holding cost → total invested → "
+            "stabilized NOI → refi proceeds → residual capital → stabilized DSCR → "
+            "cash-on-cash on residual. Distinct from `stress_test` (which models "
+            "purchase financing as buy-and-hold) — this models the BRRRR refi cycle "
+            "explicitly. Use when the user is doing a BRRRR-specific underwriting "
+            "(rehab + refinance pull-out), asks about 'residual capital', 'cash out "
+            "at refi', or pastes Memphis-style BRRRR numbers. Costs $0 — pure math, "
+            "no LLM, no external API."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "purchase_price":    {"type": "number"},
+                "rehab_cost":        {"type": "number"},
+                "arv":               {"type": "number", "description": "After-Repair Value"},
+                "monthly_rent":      {"type": "number", "description": "Stabilized monthly rent"},
+                "annual_opex":       {"type": "number", "description": "All-in annual opex: taxes + insurance + mgmt + vacancy + capex + repairs"},
+                "holding_cost":      {"type": "number", "description": "Hard-money interest + property carry during rehab + lease-up"},
+                "closing_cost_pct":  {"type": "number", "default": 0.035},
+                "refi_closing_cost": {"type": "number", "default": 3500},
+                "refi_ltv":          {"type": "number", "default": 0.75},
+                "refi_rate":         {"type": "number", "default": 0.07},
+                "refi_term_years":   {"type": "integer", "default": 30},
+            },
+            "required": ["purchase_price", "rehab_cost", "arv", "monthly_rent",
+                         "annual_opex", "holding_cost"],
         },
     },
 ]
@@ -542,11 +594,31 @@ def _execute(name: str, args: dict) -> Any:
             cs = climate_mod.score_zip(con, args["zip"], args.get("state"))
             if cs:
                 climate_dict = climate_mod.to_dict(cs)
-        out = stress_mod.stress_test(a, state=args.get("state"),
-                                       climate_score=climate_dict)
+        out = stress_mod.stress_test(
+            a, state=args.get("state"),
+            climate_score=climate_dict,
+            verified_mitigations=args.get("verified_mitigations"),
+        )
         if climate_dict:
             out["climate"] = climate_dict
         return out
+
+    if name == "brrrr_walkthrough":
+        from . import brrrr as brrrr_mod
+        i = brrrr_mod.BRRRRInputs(
+            purchase_price=args["purchase_price"],
+            rehab_cost=args["rehab_cost"],
+            arv=args["arv"],
+            monthly_rent=args["monthly_rent"],
+            annual_opex=args["annual_opex"],
+            holding_cost=args["holding_cost"],
+            closing_cost_pct=args.get("closing_cost_pct", 0.035),
+            refi_closing_cost=args.get("refi_closing_cost", 3500.0),
+            refi_ltv=args.get("refi_ltv", 0.75),
+            refi_rate=args.get("refi_rate", 0.07),
+            refi_term_years=args.get("refi_term_years", 30),
+        )
+        return brrrr_mod.compute_brrrr(i).to_dict()
 
     if name == "record_decision":
         from . import decision_ledger
@@ -700,7 +772,9 @@ Recommendation gate is the moral center. GREEN requires DSCR ≥ 1.30×, refi ap
 
 ## Tools
 
-You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest, record_decision, recent_decisions, vault_search. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest, record_decision, recent_decisions, vault_search, brrrr_walkthrough. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+
+For BRRRR deals (rehab + cash-out refi structure), prefer `brrrr_walkthrough` over `stress_test` — it models the refi cycle explicitly (acquisition + closing + rehab + holding cost → invested → NOI → refi → residual). `stress_test` models buy-and-hold purchase financing. When the user has verified structural mitigations (term sheet, signed contractor bid, hard-money commitments, LTR fallback PM), pass them as `verified_mitigations` to `stress_test` — that's how RED upgrades to YELLOW per v5 §9.4.
 
 When Richard expresses a verdict on a zip or deal — "I'd buy this", "pass", "watching this one" — call `record_decision` with the zip, verdict (BUY/PASS/WATCH), and his rationale in 1-2 sentences. These verdicts become fast-weight context next session. Don't fabricate verdicts; only record when he's actually expressed one.
 
