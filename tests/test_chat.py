@@ -166,6 +166,7 @@ def test_every_tool_executes():
         ("parse_remarks", {"text": "trustees sale, REO, motivated seller"}),
         ("current_rates", {}),
         ("recent_decisions", {"limit": 5}),
+        ("vault_search",  {"query": "framework", "limit": 2}),
     ]
     for name, args in cases:
         out = chat._execute(name, args)
@@ -232,6 +233,73 @@ def test_record_decision_requires_reason(tmp_path, monkeypatch):
         "zip": "12345", "verdict": "BUY", "reason": "",
     })
     assert "error" in out
+
+
+# ---- Vault knowledge (Obsidian wiring) -----------------------------------
+
+def test_knowledge_block_empty_when_folder_missing(tmp_path, monkeypatch):
+    """No vault → empty string. Keeps the system-prompt cache key stable
+    for users without a vault."""
+    monkeypatch.setenv("REIP_VAULT_PATH", str(tmp_path / "no-such-vault"))
+    from reip import vault_knowledge
+    assert vault_knowledge.load_knowledge_block() == ""
+
+
+def test_knowledge_block_empty_when_folder_exists_but_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("REIP_VAULT_PATH", str(tmp_path))
+    (tmp_path / "Real Estate Platform" / "Knowledge").mkdir(parents=True)
+    from reip import vault_knowledge
+    assert vault_knowledge.load_knowledge_block() == ""
+
+
+def test_knowledge_block_loads_md_files_skipping_underscore(tmp_path, monkeypatch):
+    monkeypatch.setenv("REIP_VAULT_PATH", str(tmp_path))
+    k = tmp_path / "Real Estate Platform" / "Knowledge"
+    k.mkdir(parents=True)
+    (k / "principles.md").write_text(
+        "---\ntype: knowledge\n---\n# Principles\nCap rate is the wrong metric.\n"
+    )
+    (k / "_archived.md").write_text("# Archived\nshould not appear")
+    (k / "msas.md").write_text("# MSAs\nLaunch: Memphis, Indy, Columbus.\n")
+
+    from reip import vault_knowledge
+    block = vault_knowledge.load_knowledge_block()
+    assert "Cap rate is the wrong metric" in block
+    assert "Memphis, Indy, Columbus" in block
+    assert "should not appear" not in block
+    # YAML frontmatter stripped
+    assert "type: knowledge" not in block
+    # Filename as header (file stem)
+    assert "### principles" in block
+    assert "### msas" in block
+
+
+def test_vault_search_finds_matches_and_clamps_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("REIP_VAULT_PATH", str(tmp_path))
+    (tmp_path / "Real Estate Platform").mkdir(parents=True)
+    (tmp_path / "Real Estate Platform" / "alpha.md").write_text(
+        "Photo-assisted rehab heuristic is alpha source #8."
+    )
+    (tmp_path / "Real Estate Platform" / "beta.md").write_text(
+        "Cap rate is the wrong quality metric.\nUse realized accuracy."
+    )
+    (tmp_path / "Daily" / "2026-05-15.md").parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Daily" / "2026-05-15.md").write_text("Built reip vault wiring today.")
+
+    out = chat._execute("vault_search", {"query": "alpha", "limit": 5})
+    assert isinstance(out, list)
+    assert len(out) >= 1
+    assert any("alpha.md" in h["path"] for h in out)
+    # Excerpt should contain the match (case-insensitive)
+    assert any("alpha source" in h["excerpt"].lower() for h in out)
+
+    # Empty query → error shape
+    err = chat._execute("vault_search", {"query": ""})
+    assert isinstance(err, list) and "error" in err[0]
+
+    # Out-of-range limit → clamped, no crash
+    out = chat._execute("vault_search", {"query": "the", "limit": 999})
+    assert len(out) <= 20  # _SEARCH_MAX_LIMIT
 
 
 def test_recent_decisions_clamps_limit(tmp_path, monkeypatch):

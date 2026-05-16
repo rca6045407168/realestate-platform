@@ -292,6 +292,27 @@ TOOLS = [
         },
     },
     {
+        "name": "vault_search",
+        "description": (
+            "Search Richard's Obsidian vault for markdown notes matching a query. "
+            "Use this when he asks 'what did I write about X', 'remind me about <topic>', "
+            "or any question that wants content from his personal knowledge base rather "
+            "than the live data tools. The Knowledge/ folder is already auto-loaded into "
+            "the system prompt — only call vault_search when the question targets vault "
+            "content OUTSIDE that folder (sessions, daily notes, other project briefs) or "
+            "when you need a specific quote/excerpt. Returns up to `limit` hits as "
+            "{path, line, excerpt}. Slim by design — never dump full notes back to the user."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Case-insensitive substring to find"},
+                "limit": {"type": "integer", "default": 5, "description": "Max hits (1-20)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "stress_test",
         "description": (
             "Multi-scenario underwriter. Runs base / stress / worst-case on a deal "
@@ -551,6 +572,10 @@ def _execute(name: str, args: dict) -> Any:
             n = 10
         return decision_ledger.recent(n)
 
+    if name == "vault_search":
+        from . import vault_knowledge
+        return vault_knowledge.search(args.get("query", ""), args.get("limit", 5))
+
     if name == "parse_remarks":
         s = remarks_mod.parse(args["text"])
         return {
@@ -625,6 +650,18 @@ def _build_context() -> str:
     except Exception as e:
         parts.append(f"\n## Decision ledger unavailable — {type(e).__name__}: {e}")
 
+    # Obsidian knowledge — any markdown Richard drops into
+    # ~/Documents/Obsidian Vault/Real Estate Platform/Knowledge/*.md gets
+    # auto-loaded into the cached system prefix. Authoring lives in the
+    # vault; the platform reads from disk.
+    try:
+        from . import vault_knowledge
+        knowledge_block = vault_knowledge.load_knowledge_block()
+        if knowledge_block:
+            parts.append(knowledge_block)
+    except Exception as e:
+        parts.append(f"\n## Vault knowledge unavailable — {type(e).__name__}: {e}")
+
     return "\n".join(parts)
 
 
@@ -663,9 +700,11 @@ Recommendation gate is the moral center. GREEN requires DSCR ≥ 1.30×, refi ap
 
 ## Tools
 
-You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest, record_decision, recent_decisions. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest, record_decision, recent_decisions, vault_search. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
 
 When Richard expresses a verdict on a zip or deal — "I'd buy this", "pass", "watching this one" — call `record_decision` with the zip, verdict (BUY/PASS/WATCH), and his rationale in 1-2 sentences. These verdicts become fast-weight context next session. Don't fabricate verdicts; only record when he's actually expressed one.
+
+His Obsidian Knowledge/ folder is already auto-loaded below. Only call `vault_search` for content OUTSIDE that folder (other project briefs, session notes, daily notes) or when you need a specific quoted excerpt from a known note.
 
 Use `strategy_backtest` when the user asks for empirical historical evidence — e.g. "what's the worst drawdown ever in X market", "show me the regime decomposition", "is momentum real in real estate", "how did Sun Belt compare to CA Coastal over 30 years". Pick the right section.
 
