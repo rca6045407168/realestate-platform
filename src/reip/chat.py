@@ -369,9 +369,8 @@ TOOLS = [
             "Returns: quintile spread (top-vs-bottom realized return with bootstrap 95% CI), "
             "decomposition validity (appreciation_score ↔ HPI rho; cashflow_score ↔ yield rho), "
             "lift over a naive-yield benchmark, and optional multi-window regime stability. "
-            "Honest scope: msa_score uses current-snapshot inputs, so this is IN-SAMPLE — "
-            "the report explicitly flags is_in_sample=True. True out-of-sample needs the "
-            "historical-factor-snapshot work (build spec Phase 6 Task 1). "
+            "Set `out_of_sample=true` to use the leakage-free `score_as_of` scorer "
+            "(HPI/ZHVI/ZORI/FEMA only; static factors dropped). Default is in-sample. "
             "Writes a markdown report to ~/.reip/backtest_reports/ regardless of pass/fail "
             "(per spec discipline). Use when Richard asks 'does the model work', 'backtest "
             "the scoring', or 'what's the lift vs naive yield'."
@@ -381,6 +380,7 @@ TOOLS = [
             "properties": {
                 "backtest_start_year": {"type": "integer", "default": 2018, "description": "Window start year (default 2018)"},
                 "window_years": {"type": "integer", "default": 5},
+                "out_of_sample": {"type": "boolean", "default": False, "description": "If true, use score_as_of(year) for leakage-free scoring. Default = in-sample using current msa_score."},
                 "multi_window": {"type": "boolean", "default": False, "description": "Run multiple windows (e.g. 2014 + 2018) for regime stability (v5 Test 4)"},
                 "n_bootstrap": {"type": "integer", "default": 1000, "description": "Bootstrap samples for the CI on top-minus-bottom spread"},
             },
@@ -641,6 +641,7 @@ def _execute(name: str, args: dict) -> Any:
             backtest_start_year=args.get("backtest_start_year", 2018),
             window_years=args.get("window_years", 5),
             n_bootstrap=args.get("n_bootstrap", 1000),
+            out_of_sample=args.get("out_of_sample", False),
         )
         path = sbk.write_report(report)
         # Slim return — full report on disk, summary in chat (tool results

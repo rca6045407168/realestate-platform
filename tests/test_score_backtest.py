@@ -142,5 +142,5 @@ def test_report_writes_to_tmp(tmp_path):
     assert "Test 1" in body and "Test 2" in body and "Test 3" in body
     assert "Quintile means" in body
     assert "Spearman" in body
-    # Filename scheme: backtest-<date>-<start>w<years>.md
-    assert "backtest-2026-05-16-2018w5.md" in str(path)
+    # Filename scheme: backtest-<date>-<start>w<years>-<IS|OOS>.md
+    assert "backtest-2026-05-16-2018w5-IS.md" in str(path)

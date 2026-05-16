@@ -311,16 +311,32 @@ def run_backtest(
     backtest_start_year: int = 2018,
     window_years: int = 5,
     n_bootstrap: int = 1_000,
+    out_of_sample: bool = False,
 ) -> BacktestReport:
     """End-to-end backtest run. Default window: 2018→2023 (most recent
     complete 5y the FHFA panel cleanly supports given current data lag).
+
+    `out_of_sample=False`: score MSAs with the current `msa_score` model
+    (in-sample — reip's snapshot uses current data).
+
+    `out_of_sample=True`: score with `score_as_of(backtest_start_year)`
+    which uses only HPI/ZHVI/ZORI/FEMA data with periods ≤ start_year.
+    Genuine OOS for the time-series features. Static factors (saiz,
+    wrluri, tax) are dropped from the factor set — see score_as_of
+    module docstring.
     """
     own = False
     if con is None:
         con = connect(); own = True
     try:
-        raw = msa_score.features(con)
-        scored = msa_score.with_archetype(msa_score.score(raw))
+        if out_of_sample:
+            from . import score_as_of as soa
+            scored = soa.score_as_of(con, backtest_start_year)
+            is_in_sample = False
+        else:
+            raw = msa_score.features(con)
+            scored = msa_score.with_archetype(msa_score.score(raw))
+            is_in_sample = True
         returns = realized_total_return(con, backtest_start_year, window_years)
 
         q = quintile_spread(scored, returns,
@@ -332,19 +348,30 @@ def run_backtest(
                                             return_col="total_return",
                                             n_bootstrap=n_bootstrap)
 
-        notes = [
-            "IN-SAMPLE: msa_score uses current-snapshot data, not as-of-"
-            f"{backtest_start_year} inputs. True out-of-sample requires "
-            "build-spec §3 Phase 6 task 1 (historical-factor snapshot).",
+        if is_in_sample:
+            notes = [
+                "IN-SAMPLE: msa_score uses current-snapshot data, not as-of-"
+                f"{backtest_start_year} inputs. True out-of-sample requires "
+                "the leakage-free `score_as_of` scorer (set out_of_sample=True).",
+            ]
+        else:
+            notes = [
+                "OUT-OF-SAMPLE: score_as_of uses only HPI/ZHVI/ZORI/FEMA "
+                f"data with period ≤ {backtest_start_year}. Static structural "
+                "factors (saiz_elasticity, wharton_wrluri, property_tax_state) "
+                "are dropped from the factor set; this tests whether market-"
+                "momentum + yield features alone deliver alpha.",
+            ]
+        notes.append(
             f"Realized total return = FHFA HPI CAGR ({backtest_start_year}→"
-            f"{backtest_start_year + window_years}) + current gross yield. "
-            "Cap-rate movement + tax shield refinements deferred.",
-        ]
+            f"{backtest_start_year + window_years}) + window-averaged gross "
+            "yield. Cap-rate movement + tax shield refinements deferred."
+        )
         return BacktestReport(
             score_date=_dt.datetime.utcnow().strftime("%Y-%m-%d"),
             backtest_start_year=backtest_start_year,
             window_years=window_years,
-            is_in_sample=True,
+            is_in_sample=is_in_sample,
             n_msas=q.n_msas,
             test_1_quintile_spread=q.__dict__,
             test_2_decomposition=d,
@@ -366,9 +393,10 @@ def write_report(report: BacktestReport, dest_dir: Optional[Path] = None) -> Pat
     Per build-spec §3 Phase 6: published regardless of outcome."""
     dest_dir = dest_dir or (Path.home() / ".reip" / "backtest_reports")
     dest_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "IS" if report.is_in_sample else "OOS"
     path = dest_dir / (
         f"backtest-{report.score_date}-"
-        f"{report.backtest_start_year}w{report.window_years}.md"
+        f"{report.backtest_start_year}w{report.window_years}-{suffix}.md"
     )
     q  = report.test_1_quintile_spread
     d  = report.test_2_decomposition
