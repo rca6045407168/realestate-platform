@@ -153,16 +153,30 @@ def search(cbsa_code: str, num_homes: int = 50,
 
     Returns (listings, warnings). uipt="1,2,3" = SFR + condo + townhouse.
     status="9" = active for-sale.
+
+    Pricing: Redfin's gis-csv endpoint silently IGNORES `min_price` /
+    `max_price` URL params even when sent (verified 2026-05-16: asking
+    for $1.5M-$5M in LA returns the full $65K-$13M panel). We still
+    pass the params (in case Redfin honors them someday) but ALSO
+    apply a server-side filter after parsing. If a price band is set,
+    we also fetch `num_homes * 4` candidates so the post-filter set
+    stays a useful size for cashflow vs. luxury bands alike.
     """
     market = MARKETS.get(cbsa_code)
     warnings: list[str] = []
     if not market:
         return [], [f"CBSA {cbsa_code} is not in the launch-markets allowlist. "
                     f"Add it to listings_search.MARKETS."]
+    # When a price band is set, over-fetch so the post-filter cohort
+    # still has enough to score. Redfin caps requests at ~350 homes;
+    # 4× the requested num_homes gives headroom without timing out.
+    fetch_n = num_homes
+    if min_price is not None or max_price is not None:
+        fetch_n = min(350, max(num_homes * 4, 200))
     params = {
         "al": 1,
         "market": market["market"],
-        "num_homes": num_homes,
+        "num_homes": fetch_n,
         "ord": "days-on-redfin-asc",
         "page_number": 1,
         "region_id": market["region_id"],
@@ -189,6 +203,28 @@ def search(cbsa_code: str, num_homes: int = 50,
         return [], [f"Redfin response was not JSON: {e}"]
     homes = (data.get("payload") or {}).get("homes") or []
     listings = [l for l in (_parse_home(h, cbsa_code, market["name"]) for h in homes) if l is not None]
+
+    # Server-side price filter — Redfin doesn't honor min/max via URL.
+    # Listings without a listed_price are dropped (can't filter what we
+    # don't know; they're noise for the buy-screening use case anyway).
+    if min_price is not None or max_price is not None:
+        n_before = len(listings)
+        lo = min_price if min_price is not None else 0
+        hi = max_price if max_price is not None else float("inf")
+        listings = [l for l in listings
+                    if l.listed_price is not None and lo <= l.listed_price <= hi]
+        if not listings:
+            warnings.append(
+                f"No active listings in ${lo:,}–${hi:,} for this CBSA "
+                f"({n_before} fetched, 0 in range). Widen the band or check another market."
+            )
+        elif n_before > 0 and len(listings) < num_homes // 4:
+            warnings.append(
+                f"Only {len(listings)} active listings in ${lo:,}–${hi:,} "
+                f"({n_before} fetched). Band is narrow for this market — "
+                "widen for more options."
+            )
+
     return listings, warnings
 
 
