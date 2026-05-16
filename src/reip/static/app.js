@@ -779,7 +779,13 @@ async function loadBuy() {
     $('buyHost').innerHTML = `<div class="col-span-3 p-6">${reason}${(r.warnings || []).length ? '<div class="text-xs text-muted mt-3">'+r.warnings.join('<br>')+'</div>' : ''}</div>`;
     return;
   }
-  $('buyHost').innerHTML = r.results.map(renderBuyCard).join('');
+  // Render warnings above the grid even when results exist — a "thin band"
+  // warning is most useful precisely when the user got SOME results but
+  // the cohort is much smaller than they'd expect.
+  const warningStrip = (r.warnings || []).length
+    ? `<div class="col-span-3 p-3 mb-2 bg-card border border-line rounded text-xs text-yellow">⚠ ${r.warnings.join(' · ')}</div>`
+    : '';
+  $('buyHost').innerHTML = warningStrip + r.results.map(renderBuyCard).join('');
 }
 
 function renderBuyCard(r) {
