@@ -1,0 +1,155 @@
+# Memphis Sample Deal — canonical correctness fixture
+#
+# Source: RealEstate_Investment_Framework_v5.docx, Section 9 (Sample
+# Property Walkthrough). This is the platform's "moral center" fixture:
+# every code change must screen this deal RED on default rules, and
+# (once mitigations are implemented) YELLOW with all five mitigations
+# marked verified. Anything else is a bug.
+#
+# Build-spec reference: PLATFORM_BUILD_SPEC.md §3 Phase 3 +
+# §4 Recommendation gate. Acceptance: "Memphis fixture screens RED
+# on default; screens YELLOW only with all 5 mitigations marked verified."
+
+property:
+  address: "1247 Maple Ave, Memphis, TN 38108"   # synthetic / illustrative
+  state: "TN"
+  zip: "38108"
+  cbsa_code: "32820"                              # Memphis MSA
+  bedrooms: 3
+  bathrooms: 1.5
+  square_feet: 1140
+  year_built: 1958
+  property_type: "SFR"
+  msa_archetype: "Cashflow Heartland"
+  msa_blended_score: 64                           # 38 appreciation, 78 cashflow
+
+listing:
+  asking_price: 145000
+  days_on_market: 89
+  price_cuts: [165000, 155000, 145000]
+  remarks: "Estate sale, cash only, motivated seller"
+  alpha_flags:
+    - stale
+    - behavioral
+    - distressed
+    - value_add
+
+# The deal as actually underwritten (Table 8): offer below ask, off the
+# 70%-rule maximum by ~6%, into the BRRRR refi cycle.
+deal:
+  # Acquisition
+  purchase_price: 115000          # candidate offer (Table 8)
+  closing_cost_pct: 0.035          # $4,000 on $115K
+  rehab_cost: 42000               # see rehab_breakdown
+  holding_cost: 4000              # 4-mo rehab + lease-up
+  total_invested_before_refi: 165000
+
+  # Stabilized economics
+  arv: 215000                     # ±$15K confidence band per 3-comp model
+  monthly_rent: 1750              # = $21,000 / year
+  annual_opex: 7200               # taxes + insurance + 10% mgmt + 8% vac + 5% capex + 5% repairs
+  stabilized_noi: 13800           # = $1,750 × 12 − $7,200
+
+  # Refi
+  refi_ltv: 0.75
+  refi_rate: 0.07
+  refi_term_years: 30
+  refi_proceeds_gross: 161250     # = 0.75 × $215K
+  refi_closing_costs: 3500
+  refi_proceeds_net: 157750
+  residual_capital: 7250          # = $165K − $157.75K
+  annual_cashflow_after_debt_service: 930
+  stabilized_dscr: 1.07           # ← the headline number. <1.10 = RED.
+  cash_on_cash_on_residual: 0.13
+
+# Per Section 9 / Table 9 — rehab line items
+rehab_breakdown:
+  kitchen: 12000
+  bath: 4000
+  flooring: 8000
+  paint: 3000
+  hvac: 6000
+  roof: 5000
+  contingency: 4000
+
+# Used by reip's current stress_test (which underwrites the purchase
+# financing as buy-and-hold; BRRRR refi mechanics per Section 9.2 are
+# not yet wired — see open thread in framework-anchors.md).
+stress_test_inputs:
+  purchase_price: 115000
+  rehab_cost: 42000
+  arv: 215000
+  monthly_rent: 1750
+  mortgage_rate: 0.07
+  ltv: 0.75
+  vacancy: 0.08
+  property_tax_rate: 0.014        # Memphis ~1.4% effective
+  insurance_annual: 1500
+  hoa_monthly: 0
+  state: "TN"
+  zip: "38108"
+
+# The five mitigations from Section 9.4 that upgrade RED → YELLOW once
+# all are marked verified. None are wired into reip's current gate yet;
+# the build spec calls for `packages/scoring/recommendation.py` to take
+# a `VerifiedMitigations` object and apply REQUIRED_MITIGATIONS_BY_FAILURE.
+mitigations:
+  - id: "verified_70pct_ltv_term_sheet"
+    description: "DSCR-loan term sheet at 70% LTV (not 75%) from a named lender — raises stabilized DSCR to ~1.20x."
+    upgrades: ["thin_dscr"]
+  - id: "documented_capital_reserve_min_25k"
+    description: "Capital reserve ≥$25,000 documented in reserve-balance field, sized to 25th-pct combined-stress."
+    upgrades: ["thin_dscr"]
+  - id: "signed_contractor_bid"
+    description: "Signed contractor bid for the rehab scope — fixed price replaces the heuristic estimate."
+    upgrades: ["rehab_overrun_risk"]
+  - id: "committed_hard_money_primary"
+    description: "Hard-money line committed for full rehab plus 60-day buffer."
+    upgrades: ["financing_risk"]
+  - id: "committed_hard_money_backup"
+    description: "Second hard-money relationship as backup."
+    upgrades: ["financing_risk"]
+  - id: "ltr_fallback_pm_identified"
+    description: "Long-term-rental fallback PM identified (deal does not depend on STR or MTR)."
+    upgrades: ["exit_risk"]
+
+# Expected verdicts — these are the assertions test_memphis_canonical.py
+# will pin against.
+expected:
+  default_verdict: "RED"
+  # The build spec also requires: with all five mitigations marked
+  # verified, the deal upgrades to YELLOW. reip's current gate does
+  # not yet take mitigations — this is a Phase 3 task (see open
+  # thread in Knowledge/framework-anchors.md).
+  with_all_mitigations_verdict: "YELLOW"
+  default_dscr_below: 1.30        # base DSCR must be below GREEN threshold
+  default_base_coc_below: 0.06    # base CoC must be below GREEN threshold
+
+# Sensitivity scenarios from Table 10 of the long paper. Used by
+# Phase 3's sensitivity.py implementation — pin them once the BRRRR
+# module exists.
+sensitivity:
+  - name: "base"
+    total_invested: 165000
+    residual_capital: 7250
+    coc_on_residual: 0.13
+  - name: "rehab_over_20pct"
+    total_invested: 173000
+    residual_capital: 15250
+    coc_on_residual: 0.06
+  - name: "arv_miss_5pct"
+    total_invested: 165000
+    residual_capital: 15500
+    coc_on_residual: 0.06
+  - name: "rehab_arv_combined"
+    total_invested: 173000
+    residual_capital: 23500
+    coc_on_residual: 0.04
+  - name: "catastrophic"
+    total_invested: 177000
+    residual_capital: 36000
+    coc_on_residual: 0.03
+  - name: "bull_arv_up_5pct"
+    total_invested: 165000
+    residual_capital: -500
+    coc_on_residual: null         # zero residual → infinite, encode as null
