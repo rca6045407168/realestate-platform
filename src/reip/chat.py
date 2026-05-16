@@ -363,6 +363,30 @@ TOOLS = [
         },
     },
     {
+        "name": "run_score_backtest",
+        "description": (
+            "Run the score-model backtest protocol from v5 §7.5 + build spec §3 Phase 6. "
+            "Returns: quintile spread (top-vs-bottom realized return with bootstrap 95% CI), "
+            "decomposition validity (appreciation_score ↔ HPI rho; cashflow_score ↔ yield rho), "
+            "lift over a naive-yield benchmark, and optional multi-window regime stability. "
+            "Honest scope: msa_score uses current-snapshot inputs, so this is IN-SAMPLE — "
+            "the report explicitly flags is_in_sample=True. True out-of-sample needs the "
+            "historical-factor-snapshot work (build spec Phase 6 Task 1). "
+            "Writes a markdown report to ~/.reip/backtest_reports/ regardless of pass/fail "
+            "(per spec discipline). Use when Richard asks 'does the model work', 'backtest "
+            "the scoring', or 'what's the lift vs naive yield'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "backtest_start_year": {"type": "integer", "default": 2018, "description": "Window start year (default 2018)"},
+                "window_years": {"type": "integer", "default": 5},
+                "multi_window": {"type": "boolean", "default": False, "description": "Run multiple windows (e.g. 2014 + 2018) for regime stability (v5 Test 4)"},
+                "n_bootstrap": {"type": "integer", "default": 1000, "description": "Bootstrap samples for the CI on top-minus-bottom spread"},
+            },
+        },
+    },
+    {
         "name": "brrrr_walkthrough",
         "description": (
             "Run the v5 §9.2 BRRRR (Buy-Rehab-Rent-Refinance-Repeat) walkthrough "
@@ -603,6 +627,42 @@ def _execute(name: str, args: dict) -> Any:
             out["climate"] = climate_dict
         return out
 
+    if name == "run_score_backtest":
+        from . import score_backtest as sbk
+        if args.get("multi_window"):
+            return sbk.run_backtest_multi_window(
+                con,
+                windows=[(2014, 5), (2018, 5)],
+                n_bootstrap=args.get("n_bootstrap", 1000),
+                write=True,
+            )
+        report = sbk.run_backtest(
+            con,
+            backtest_start_year=args.get("backtest_start_year", 2018),
+            window_years=args.get("window_years", 5),
+            n_bootstrap=args.get("n_bootstrap", 1000),
+        )
+        path = sbk.write_report(report)
+        # Slim return — full report on disk, summary in chat (tool results
+        # bill every iteration so we keep this compact).
+        q = report.test_1_quintile_spread
+        d = report.test_2_decomposition
+        l = report.test_3_lift_over_yield
+        return {
+            "report_path": str(path),
+            "window": f"{report.backtest_start_year}-{report.backtest_start_year + report.window_years}",
+            "n_msas": report.n_msas,
+            "is_in_sample": report.is_in_sample,
+            "test_1_quintile_spread_pp": round(q["top_minus_bottom"] * 100, 2),
+            "test_1_ci_95_pp": [round(c * 100, 2) for c in q["spread_ci_95"]],
+            "test_1_passes_200bps": q["passes_200bps_test"],
+            "test_2_appr_rho": round(d["appreciation_vs_hpi_spearman"], 3),
+            "test_2_cash_rho": round(d["cashflow_vs_yield_spearman"], 3),
+            "test_2_passes": d["passes"],
+            "test_3_lift_pp": round(l["lift"] * 100, 2),
+            "test_3_passes_50bps": l["lift_passes_50bps"],
+        }
+
     if name == "brrrr_walkthrough":
         from . import brrrr as brrrr_mod
         i = brrrr_mod.BRRRRInputs(
@@ -772,7 +832,7 @@ Recommendation gate is the moral center. GREEN requires DSCR ≥ 1.30×, refi ap
 
 ## Tools
 
-You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest, record_decision, recent_decisions, vault_search, brrrr_walkthrough. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
+You have tools for: top_zips, top_msas, msa_detail, live_listings, underwrite, avm_zips, parse_remarks, buy_box, stress_test, strategy_backtest, record_decision, recent_decisions, vault_search, brrrr_walkthrough, run_score_backtest. Use them when the user asks for specific data; if you can answer from the pre-loaded context below, do that and skip tool use.
 
 For BRRRR deals (rehab + cash-out refi structure), prefer `brrrr_walkthrough` over `stress_test` — it models the refi cycle explicitly (acquisition + closing + rehab + holding cost → invested → NOI → refi → residual). `stress_test` models buy-and-hold purchase financing. When the user has verified structural mitigations (term sheet, signed contractor bid, hard-money commitments, LTR fallback PM), pass them as `verified_mitigations` to `stress_test` — that's how RED upgrades to YELLOW per v5 §9.4.
 
