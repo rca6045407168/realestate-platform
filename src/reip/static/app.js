@@ -335,9 +335,9 @@ async function loadDashboard() {
     + '<th class="text-right">Mig%</th>'
     + '<th class="text-right">Yield</th>'
     + '<th class="text-right">Permits/1k</th>'
-    + '<th class="text-right">Appr</th>'
-    + '<th class="text-right">Cash</th>'
-    + '<th class="text-right">Total</th>'
+    + '<th class="text-right" title="Appreciation factor score (z-blended). Shortlist aid, not a return prediction.">Appr</th>'
+    + '<th class="text-right" title="Cashflow factor score (z-blended). Shortlist aid, not a return prediction.">Cash</th>'
+    + '<th class="text-right" title="Blended navigation score. OOS backtest does NOT support an alpha claim — use for shortlisting only. See docs/backtest_reports/.">Nav</th>'
     + '<th title="Historical max drawdown from FHFA HPI 1985-now">Stability</th>'
     + '<th>Cmp</th>'
     + '</tr></thead><tbody>';
@@ -451,10 +451,10 @@ async function openMsa(cbsa_code) {
         <div class="text-2xl num ${scoreClass(m.cashflow_score)}">${scoreFmt(m.cashflow_score)}</div>
         <div class="text-xs text-muted mt-1">${pct(m.cashflow_pct)} percentile</div>
       </div>
-      <div class="bg-card rounded border border-line p-4">
-        <div class="text-xs uppercase text-muted mb-1">Total return (blend)</div>
+      <div class="bg-card rounded border border-line p-4" title="Blended navigation score (appreciation × cashflow × risk). Shortlisting aid only — out-of-sample backtest does NOT support an alpha claim. See docs/backtest_reports/.">
+        <div class="text-xs uppercase text-muted mb-1">Navigation score</div>
         <div class="text-2xl num ${scoreClass(m.total_return_score)}">${scoreFmt(m.total_return_score)}</div>
-        <div class="text-xs text-muted mt-1">${pct(m.total_return_pct)} percentile</div>
+        <div class="text-xs text-muted mt-1">${pct(m.total_return_pct)} percentile · shortlist aid</div>
       </div>
     </div>
     <button onclick="prefillUnderwriteFor('${m.cbsa_name?.replace(/'/g, "")}')" class="px-4 py-2 rounded bg-accent text-bg font-medium">

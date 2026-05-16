@@ -96,8 +96,14 @@ TOOLS = [
     {
         "name": "top_msas",
         "description": (
-            "Return top US MSAs ranked by the framework's blended Appreciation × Cashflow × Risk score. "
-            "Use for 'which metros' / 'best markets' / archetype questions. "
+            "Return US MSAs ranked by the platform's blended navigation score "
+            "(appreciation factors × cashflow factors × risk penalty). "
+            "**Honest framing: this is a navigation aid for shortlisting, NOT a return "
+            "prediction. Out-of-sample backtest (v5 §7.5) shows the blend does not "
+            "beat naive yield — see docs/backtest_reports/*-OOS.md.** Use for 'which "
+            "metros to investigate', 'shortlist by archetype', or 'first-pass filtering'. "
+            "For deal-level expected returns use stress_test (per-property IRR/CoC/DSCR), "
+            "not this score. "
             "Returns cbsa_code, cbsa_name, archetype, pop, pop_cagr_5yr, emp_cagr_5yr, gross_yield, "
             "appreciation_score, cashflow_score, total_return_score."
         ),
@@ -739,7 +745,11 @@ def _build_context() -> str:
         if not raw.empty:
             scored = msa_score.with_archetype(msa_score.score(raw))
             top_msas = scored.sort_values("total_return_score", ascending=False).head(10)
-            parts.append("\n## Top 10 MSAs by blended total return score:")
+            parts.append(
+                "\n## Top 10 MSAs by navigation score (blended momentum/yield/risk — "
+                "shortlisting aid, not a return prediction; OOS backtest does not "
+                "support an alpha claim, see docs/backtest_reports/):"
+            )
             for _, r in top_msas.iterrows():
                 parts.append(
                     f"  - {r['cbsa_code']} {r['cbsa_name']} ({r['archetype']}) "
@@ -818,6 +828,7 @@ Recommendation gate is the moral center. GREEN requires DSCR ≥ 1.30×, refi ap
 - Florida and AZ/NV are weakening 2024-2026; the regime-adjusted ranking accounts for this. Mention it when relevant.
 - Live property listings are gated to the 11 wired metros. For any other metro, use top_zips and direct the user to the Redfin/Zillow zip URL.
 - If a deal screens RED, say RED, even if it's close. The gate doesn't soften.
+- **The MSA blended `total_return_score` is a navigation aid, NOT an alpha generator.** The v5 §7.5 backtest, run truly out-of-sample (2018-2023), shows the blended ranking does not beat naive yield (lift = -3.7pp annualized). Factor decomposition validates individually (ρ_appr=+0.38, ρ_cash=+0.44 with their targets), but the blend has no OOS edge. Frame the score as "for shortlisting / archetype filtering", never as "predicts which MSA will deliver the best returns". For deal-level expected returns use `stress_test` (per-property IRR/CoC/DSCR with stress + worst-case scenarios). See `docs/backtest_reports/*-OOS.md` in the repo for the published verdict.
 
 ## Response style
 - Plain English, investor-grade. No marketing copy.
