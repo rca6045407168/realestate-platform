@@ -14,11 +14,20 @@ them to the chat agent in two complementary ways:
      "what did I write about <topic>" questions. Returns slim hits
      (path + 200-char excerpt) so tool results stay cheap.
 
+Every `search()` call appends a row to `~/.reip/vault_search_log.jsonl`
+({ts, query, tokens, n_hits, top_paths}). The intent (per MST-062 +
+EvolveMem 2026-05-16): MEASURE retrieval quality before tuning weights.
+30 days from now we'll know real call volume + hit-set characteristics;
+only then is it worth touching the ranking. `search_log_summary()` /
+the `/api/vault_search/stats` endpoint expose the aggregates.
+
 Pattern follows decision_ledger.py — small, stdlib-only, monkeypatchable
 for tests. Authoring stays in Obsidian; the platform never writes to
 the vault from this module (read-only).
 """
 from __future__ import annotations
+import datetime as _dt
+import json
 import os
 import re
 from pathlib import Path
@@ -176,4 +185,93 @@ def search(query: str, limit: int = 5) -> list[dict]:
             {"path": str(rel), "line": line_num, "excerpt": excerpt},
         ))
     candidates.sort(key=lambda c: (c[0], c[1]))
-    return [c[2] for c in candidates[:n]]
+    results = [c[2] for c in candidates[:n]]
+    _log_search(q, tokens, results)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Outcome logging — measure-first before tuning ranking weights
+# ---------------------------------------------------------------------------
+
+_SEARCH_LOG = Path.home() / ".reip" / "vault_search_log.jsonl"
+
+
+def _log_search_path() -> Path:
+    """Function-scoped so tests can monkeypatch."""
+    return _SEARCH_LOG
+
+
+def _log_search(query: str, tokens: list[str], results: list[dict]) -> None:
+    """Append one row per search call. Best-effort — errors swallowed
+    so logging can never break the retrieval contract."""
+    try:
+        p = _log_search_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "ts": _dt.datetime.utcnow().isoformat() + "Z",
+            "query": query[:200],
+            "tokens": tokens[:10],
+            "n_hits": len(results),
+            "top_paths": [r.get("path") for r in results[:5] if isinstance(r, dict) and "path" in r],
+        }
+        with open(p, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
+
+def search_log_summary(days: int = 30) -> dict:
+    """Aggregate stats over the last `days` of vault_search calls.
+    Output shape:
+      {n_calls, n_zero_hit, avg_hits, top_queries, top_paths, since}.
+    Used by the /api/vault_search/stats endpoint."""
+    p = _log_search_path()
+    if not p.exists():
+        return {"n_calls": 0, "n_zero_hit": 0, "avg_hits": 0.0,
+                "top_queries": [], "top_paths": [], "since": None}
+    since = _dt.datetime.utcnow() - _dt.timedelta(days=days)
+    n_calls = 0
+    n_zero = 0
+    hits_sum = 0
+    q_counts: dict[str, int] = {}
+    path_counts: dict[str, int] = {}
+    try:
+        for line in p.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            ts = r.get("ts", "")
+            try:
+                rec_dt = _dt.datetime.fromisoformat(ts.replace("Z", ""))
+            except Exception:
+                continue
+            if rec_dt < since:
+                continue
+            n_calls += 1
+            n_hits = int(r.get("n_hits", 0) or 0)
+            hits_sum += n_hits
+            if n_hits == 0:
+                n_zero += 1
+            q = (r.get("query") or "").strip().lower()
+            if q:
+                q_counts[q] = q_counts.get(q, 0) + 1
+            for path in r.get("top_paths") or []:
+                if path:
+                    path_counts[path] = path_counts.get(path, 0) + 1
+    except Exception:
+        return {"error": "log_read_failed", "n_calls": 0}
+    top_q = sorted(q_counts.items(), key=lambda kv: -kv[1])[:10]
+    top_p = sorted(path_counts.items(), key=lambda kv: -kv[1])[:10]
+    return {
+        "n_calls": n_calls,
+        "n_zero_hit": n_zero,
+        "zero_hit_pct": round(100 * n_zero / max(n_calls, 1), 1),
+        "avg_hits": round(hits_sum / max(n_calls, 1), 2),
+        "top_queries": [{"query": q, "n": n} for q, n in top_q],
+        "top_paths":   [{"path":  p, "n": n} for p, n in top_p],
+        "since": since.isoformat() + "Z",
+    }

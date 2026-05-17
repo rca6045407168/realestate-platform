@@ -447,6 +447,19 @@ def chat_budget():
     }
 
 
+@app.get("/api/vault_search/stats")
+def vault_search_stats(days: int = 30):
+    """Aggregate stats over the last N days of vault_search calls.
+
+    Measure-first scaffolding for retrieval quality (per EvolveMem
+    paper + MST-062). Returns: total calls, zero-hit %, average hits,
+    top queries, top paths returned. Use this before tuning vault_search
+    ranking weights — if signal is thin, tuning is noise-chasing.
+    """
+    from . import vault_knowledge
+    return vault_knowledge.search_log_summary(days=days)
+
+
 @app.get("/api/chat/usage")
 def chat_usage_summary(days: int = 7):
     """Read ~/.reip/chat_usage.jsonl and aggregate token + cost telemetry.

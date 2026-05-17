@@ -281,6 +281,71 @@ def test_knowledge_block_loads_md_files_skipping_underscore(tmp_path, monkeypatc
     assert "### msas" in block
 
 
+def test_vault_search_logs_each_call(tmp_path, monkeypatch):
+    """Every search call appends to vault_search_log.jsonl. The log
+    is the EvolveMem-style measure-first scaffolding from MST-062 — we
+    capture call volume + hit-set BEFORE deciding whether ranking
+    weights are worth tuning."""
+    from reip import vault_knowledge
+    log_path = tmp_path / "vault_search_log.jsonl"
+    monkeypatch.setattr(vault_knowledge, "_log_search_path", lambda: log_path)
+    monkeypatch.setenv("REIP_VAULT_PATH", str(tmp_path / "vault"))
+    (tmp_path / "vault" / "Real Estate Platform").mkdir(parents=True)
+    (tmp_path / "vault" / "Real Estate Platform" / "memphis.md").write_text("Memphis cashflow buy box")
+    (tmp_path / "vault" / "Real Estate Platform" / "pittsburgh.md").write_text("Pittsburgh resilience")
+
+    chat._execute("vault_search", {"query": "memphis cashflow"})
+    chat._execute("vault_search", {"query": "no-such-content-anywhere"})
+    chat._execute("vault_search", {"query": "pittsburgh"})
+
+    assert log_path.exists()
+    lines = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+    assert len(lines) == 3
+    queries = [r["query"] for r in lines]
+    assert queries == ["memphis cashflow", "no-such-content-anywhere", "pittsburgh"]
+    # Hit counts: memphis matches 1 file (multi-token), no-such matches 0, pittsburgh matches 1
+    assert lines[0]["n_hits"] >= 1
+    assert lines[1]["n_hits"] == 0
+    assert lines[2]["n_hits"] >= 1
+
+
+def test_vault_search_log_summary(tmp_path, monkeypatch):
+    """search_log_summary() aggregates the right shape for the API
+    endpoint — call count, zero-hit %, top queries, top paths."""
+    from reip import vault_knowledge
+    log_path = tmp_path / "vault_search_log.jsonl"
+    monkeypatch.setattr(vault_knowledge, "_log_search_path", lambda: log_path)
+    # Hand-write a few log entries spanning 3 distinct queries + paths
+    import datetime as _dt
+    now = _dt.datetime.utcnow().isoformat() + "Z"
+    rows = [
+        {"ts": now, "query": "memphis",    "tokens": ["memphis"],    "n_hits": 2, "top_paths": ["A.md", "B.md"]},
+        {"ts": now, "query": "memphis",    "tokens": ["memphis"],    "n_hits": 2, "top_paths": ["A.md", "B.md"]},
+        {"ts": now, "query": "pricing",    "tokens": ["pricing"],    "n_hits": 1, "top_paths": ["C.md"]},
+        {"ts": now, "query": "broken q",   "tokens": ["broken", "q"],"n_hits": 0, "top_paths": []},
+    ]
+    log_path.write_text("\n".join(json.dumps(r) for r in rows))
+
+    out = vault_knowledge.search_log_summary(days=30)
+    assert out["n_calls"] == 4
+    assert out["n_zero_hit"] == 1
+    assert out["zero_hit_pct"] == 25.0
+    assert out["avg_hits"] == 1.25
+    # Top query: "memphis" with 2 calls
+    assert out["top_queries"][0] == {"query": "memphis", "n": 2}
+    # Top path: A.md (2 returns) ties B.md (2 returns) — first should be one of them
+    assert out["top_paths"][0]["n"] == 2
+
+
+def test_vault_search_log_summary_empty(tmp_path, monkeypatch):
+    """Missing log file → safe zeros, not a crash."""
+    from reip import vault_knowledge
+    monkeypatch.setattr(vault_knowledge, "_log_search_path", lambda: tmp_path / "nonexistent.jsonl")
+    out = vault_knowledge.search_log_summary(days=30)
+    assert out["n_calls"] == 0
+    assert out["n_zero_hit"] == 0
+
+
 def test_vault_search_finds_matches_and_clamps_limit(tmp_path, monkeypatch):
     monkeypatch.setenv("REIP_VAULT_PATH", str(tmp_path))
     (tmp_path / "Real Estate Platform").mkdir(parents=True)
