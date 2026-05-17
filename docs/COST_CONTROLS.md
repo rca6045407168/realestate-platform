@@ -1,7 +1,28 @@
 # Cost Controls
 
-The chat surface burns Anthropic credits. The platform now has three layers
-of defense.
+## Default posture (2026-05-16)
+
+**The Anthropic API key has been removed from `.env`.** All LLM calls now
+route through the Claude Code OAuth fallback (Max plan, **$0 marginal**).
+`chat.py::chat()` auto-detects: if `ANTHROPIC_API_KEY` is empty/missing
+AND a Claude Code OAuth token is reachable in the macOS keychain, it
+uses the OAuth path with the `oauth-2025-04-20` beta header.
+
+This means:
+- `/api/chat` (SPA "Ask reip" tab) → OAuth → $0
+- `reip digest` (weekly cron) → OAuth → $0
+- `reip mcp` (the MCP server) → never calls Anthropic; reuses Claude
+  Code's session via the agent that called it → $0
+- The tripwire cap is set to **`CHAT_DAILY_BUDGET_USD=0.10`** in `.env`
+  — if a key is ever re-added and starts burning budget, calls refuse
+  after $0.10/day. Defense in depth.
+
+**Best everyday path: use Claude Code with the reip MCP server.** Same
+17 tools, native chat, zero extra cost. The SPA chat tab is kept for
+parity but routes through the same OAuth path.
+
+The chat surface burns Anthropic credits IF an API key is present. The
+platform has three layers of defense for that case:
 
 ## 1. Hard daily spend cap
 
