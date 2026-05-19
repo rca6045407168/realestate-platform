@@ -36,7 +36,14 @@ from typing import Optional
 
 # Defaults are overridable via env for tests + non-default vault locations.
 _DEFAULT_VAULT = Path.home() / "Documents" / "Obsidian Vault"
-_KNOWLEDGE_SUBDIR = "Real Estate Platform/Knowledge"
+# Vault reorganized 2026-05-17/18: `Real Estate Platform/` → `Ventures/Real Estate Platform/`.
+# We probe both so a vault reorg can't silently empty the knowledge block;
+# the new path wins when both exist.
+_KNOWLEDGE_SUBDIRS = (
+    "Ventures/Real Estate Platform/Knowledge",
+    "Real Estate Platform/Knowledge",  # legacy — pre 2026-05-17
+)
+_KNOWLEDGE_SUBDIR = _KNOWLEDGE_SUBDIRS[0]  # kept for callers that import it
 
 # Caps — keep the cached system block from runaway growth.
 # Total budget is ~5K tokens of knowledge in the cached prefix; with the
@@ -60,7 +67,15 @@ def _vault_root() -> Path:
 
 
 def _knowledge_dir() -> Path:
-    return _vault_root() / _KNOWLEDGE_SUBDIR
+    """Return the first existing knowledge dir from the probe list. If
+    none exists, return the canonical (new-path) location — empty-folder
+    case is handled downstream and produces an empty block, not a crash."""
+    root = _vault_root()
+    for sub in _KNOWLEDGE_SUBDIRS:
+        p = root / sub
+        if p.is_dir():
+            return p
+    return root / _KNOWLEDGE_SUBDIRS[0]
 
 
 # ---------------------------------------------------------------------------
